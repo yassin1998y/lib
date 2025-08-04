@@ -1,10 +1,9 @@
 import 'package:animations/animations.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:freegram/main.dart'; // For AuthBloc
+import 'package:freegram/blocs/auth_bloc.dart';
 import 'package:freegram/screens/chat_list_screen.dart';
 import 'package:freegram/screens/create_post_screen.dart';
 import 'package:freegram/screens/discover_screen.dart';
@@ -13,6 +12,7 @@ import 'package:freegram/screens/nearby_screen.dart';
 import 'package:freegram/screens/notifications_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/seed_database.dart';
 import 'package:image_picker/image_picker.dart';
 
 class MainScreen extends StatefulWidget {
@@ -31,16 +31,20 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    final currentUser = context.read<AuthBloc>().state as AuthenticatedState;
-    _setupFcm(currentUser.user.uid);
-    _updateUserPresence(currentUser.user.uid, true);
-
-    _widgetOptions = <Widget>[
-      const FeedWidget(), // Assuming FeedWidget is defined in main.dart or its own file
-      const DiscoverScreen(),
-      const ChatListScreen(),
-      ProfileScreen(userId: currentUser.user.uid),
-    ];
+    final authState = context.read<AuthBloc>().state;
+    if (authState is Authenticated) {
+      _setupFcm(authState.user.uid);
+      _updateUserPresence(authState.user.uid, true);
+      _widgetOptions = <Widget>[
+        const FeedWidget(), // Assuming FeedWidget is defined elsewhere for now
+        const DiscoverScreen(),
+        const ChatListScreen(),
+        ProfileScreen(userId: authState.user.uid),
+      ];
+    } else {
+      // Handle case where state is not Authenticated, though this screen shouldn't be reached.
+      _widgetOptions = const [Center(child: Text("Error: Not Authenticated"))];
+    }
   }
 
   @override
@@ -54,7 +58,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     final authState = context.read<AuthBloc>().state;
-    if (authState is AuthenticatedState) {
+    if (authState is Authenticated) {
       if (state == AppLifecycleState.resumed) {
         _updateUserPresence(authState.user.uid, true);
       } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
@@ -68,7 +72,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     try {
       await context.read<FirestoreService>().updateUserPresence(uid, isOnline);
     } catch (e) {
-      // Errors can happen if the user is offline, so they are ignored.
       debugPrint("Could not update presence: $e");
     }
   }
@@ -140,35 +143,44 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildChatIconWithBadge() {
-    final currentUser = (context.read<AuthBloc>().state as AuthenticatedState).user;
-    return StreamBuilder<int>(
-      stream: context.read<FirestoreService>().getUnreadChatCountStream(currentUser.uid),
-      builder: (context, snapshot) {
-        final totalUnread = snapshot.data ?? 0;
-        return Badge(
-          label: Text(totalUnread.toString()),
-          isLabelVisible: totalUnread > 0,
-          child: _buildAnimatedIcon(Icons.chat_bubble_outline, 2),
-        );
-      },
-    );
+    final authState = context.read<AuthBloc>().state;
+    if (authState is Authenticated) {
+      return StreamBuilder<int>(
+        stream: context.read<FirestoreService>().getUnreadChatCountStream(authState.user.uid),
+        builder: (context, snapshot) {
+          final totalUnread = snapshot.data ?? 0;
+          return Badge(
+            label: Text(totalUnread.toString()),
+            isLabelVisible: totalUnread > 0,
+            child: _buildAnimatedIcon(Icons.chat_bubble_outline, 2),
+          );
+        },
+      );
+    }
+    return _buildAnimatedIcon(Icons.chat_bubble_outline, 2);
   }
 
   Widget _buildActivityIconWithBadge() {
-    final currentUser = (context.read<AuthBloc>().state as AuthenticatedState).user;
-    return StreamBuilder<int>(
-      stream: context.read<FirestoreService>().getUnreadNotificationCountStream(currentUser.uid),
-      builder: (context, snapshot) {
-        final unreadCount = snapshot.data ?? 0;
-        return Badge(
-          label: Text(unreadCount.toString()),
-          isLabelVisible: unreadCount > 0,
-          child: IconButton(
-            icon: const Icon(Icons.notifications_none, color: Colors.black87),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
-          ),
-        );
-      },
+    final authState = context.read<AuthBloc>().state;
+    if (authState is Authenticated) {
+      return StreamBuilder<int>(
+        stream: context.read<FirestoreService>().getUnreadNotificationCountStream(authState.user.uid),
+        builder: (context, snapshot) {
+          final unreadCount = snapshot.data ?? 0;
+          return Badge(
+            label: Text(unreadCount.toString()),
+            isLabelVisible: unreadCount > 0,
+            child: IconButton(
+              icon: const Icon(Icons.notifications_none, color: Colors.black87),
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
+            ),
+          );
+        },
+      );
+    }
+    return IconButton(
+      icon: const Icon(Icons.notifications_none, color: Colors.black87),
+      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
     );
   }
 
@@ -205,9 +217,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           ),
           PopupMenuButton<String>(
             onSelected: (value) async {
-              if (value == 'logout' && authState is AuthenticatedState) {
+              if (value == 'logout' && authState is Authenticated) {
                 await _updateUserPresence(authState.user.uid, false);
-                context.read<AuthBloc>().add(SignOutEvent());
+                context.read<AuthBloc>().add(SignOut());
               }
             },
             itemBuilder: (BuildContext context) => [const PopupMenuItem<String>(value: 'logout', child: Text('Logout'))],
@@ -253,7 +265,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 }
 
-// Placeholder for the FeedWidget, assuming it will be in its own file or defined elsewhere.
+// Placeholder for the FeedWidget. This should be moved to its own file.
 class FeedWidget extends StatelessWidget {
   const FeedWidget({super.key});
 
