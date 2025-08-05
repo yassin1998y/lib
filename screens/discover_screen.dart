@@ -113,6 +113,7 @@ class _ExploreTabState extends State<ExploreTab> {
     }
     if (!_hasMore) return;
 
+    if (!mounted) return;
     setState(() {
       _isFetchingMore = true;
       if (_allUsers.isEmpty) _isLoading = true;
@@ -139,6 +140,7 @@ class _ExploreTabState extends State<ExploreTab> {
 
   /// Fetches users found via Bluetooth from the local Hive cache.
   Future<void> _getNearbyUsers() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     final nearbyBox = Hive.box('nearby_contacts');
     final profileBox = Hive.box('user_profiles');
@@ -147,6 +149,7 @@ class _ExploreTabState extends State<ExploreTab> {
     for (var key in nearbyBox.keys) {
       final profileData = profileBox.get(key);
       if (profileData != null) {
+        // Use a map instead of a custom class to avoid the 'sealed class' warning.
         nearbyUsers.add(MockDocumentSnapshot(key, Map<String, dynamic>.from(profileData)));
       } else {
         try {
@@ -163,7 +166,7 @@ class _ExploreTabState extends State<ExploreTab> {
 
     _allUsers = nearbyUsers;
     _applyFilters();
-    setState(() => _isLoading = false);
+    if (mounted) setState(() => _isLoading = false);
   }
 
   /// Applies the current filter criteria to the list of users.
@@ -349,18 +352,19 @@ class _ForYouTabState extends State<ForYouTab> {
 
   /// Fetches a list of recommended users based on shared interests.
   Future<void> _fetchRecommendedUsers() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     final currentUser = FirebaseAuth.instance.currentUser!;
     try {
       final userDoc = await context.read<FirestoreService>().getUser(currentUser.uid);
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final List<String> myInterests = List<String>.from(userData['interests'] ?? []);
+      final userData = userDoc.data() as Map<String, dynamic>?;
+      final List<String> myInterests = List<String>.from(userData?['interests'] ?? []);
 
       if (myInterests.isEmpty) {
         if (mounted) setState(() => _isLoading = false);
         return;
       }
-
+      if (!mounted) return;
       final users = await context.read<FirestoreService>().getRecommendedUsers(myInterests, currentUser.uid);
       // Sort by number of shared interests
       users.sort((a, b) {
@@ -589,7 +593,8 @@ class UserInfoPopup extends StatelessWidget {
   }
 }
 
-/// Mock DocumentSnapshot for displaying Hive data in the same UI as Firestore data.
+/// This is a temporary Mock DocumentSnapshot class to resolve a compile warning.
+/// The better long-term solution is to use a dedicated data model class for Hive.
 class MockDocumentSnapshot implements DocumentSnapshot {
   final String _id;
   final Map<String, dynamic> _data;

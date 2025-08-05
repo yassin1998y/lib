@@ -91,16 +91,20 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
   /// Validates input, uploads the image, and creates the post using FirestoreService.
   Future<void> _createPost() async {
     if (_imageFile == null) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select an image.')));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Please select an image.')));
+      }
       return;
     }
 
     // Prevent multiple submissions
     if (_isLoading) return;
 
-    setState(() {
-      _isLoading = true;
-    });
+    if (mounted) {
+      setState(() {
+        _isLoading = true;
+      });
+    }
 
     final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
@@ -118,6 +122,7 @@ class _CreatePostScreenState extends State<CreatePostScreen> {
       }
 
       // 2. Use the centralized FirestoreService to create the post document
+      if (!mounted) return;
       await context.read<FirestoreService>().createPost(
         userId: currentUser.uid,
         username: currentUser.displayName ?? 'Anonymous',

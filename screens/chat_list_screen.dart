@@ -119,6 +119,28 @@ class ChatListItem extends StatelessWidget {
     required this.currentUserId,
   });
 
+  /// A helper function to format the last seen timestamp into a short string
+  /// without approximation symbols.
+  String _formatLastSeenShort(Timestamp? lastSeenTimestamp) {
+    if (lastSeenTimestamp == null) {
+      return '';
+    }
+
+    final now = DateTime.now();
+    final lastSeen = lastSeenTimestamp.toDate();
+    final difference = now.difference(lastSeen);
+
+    if (difference.inSeconds < 60) {
+      return ''; // No indicator for very recent activity
+    } else if (difference.inMinutes < 60) {
+      return '${difference.inMinutes}m';
+    } else if (difference.inHours < 24) {
+      return '${difference.inHours}h';
+    } else {
+      return '${difference.inDays}d';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final firestoreService = context.read<FirestoreService>();
@@ -138,6 +160,8 @@ class ChatListItem extends StatelessWidget {
         final userData = userSnapshot.data!.data() as Map<String, dynamic>;
         final photoUrl = userData['photoUrl'];
         final isOnline = userData['presence'] ?? false;
+        final lastSeenTimestamp = userData['lastSeen'] as Timestamp?;
+        final formattedLastSeen = _formatLastSeenShort(lastSeenTimestamp);
 
         final unreadCount = (chatData['unreadCount'] as Map<String, dynamic>?)?[currentUserId] ?? 0;
 
@@ -212,6 +236,23 @@ class ChatListItem extends StatelessWidget {
                       ),
                     ),
                   )
+                else if (formattedLastSeen.isNotEmpty)
+                  Positioned(
+                    bottom: -2,
+                    right: -2,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.green, width: 1),
+                      ),
+                      child: Text(
+                        formattedLastSeen,
+                        style: const TextStyle(color: Colors.green, fontSize: 8, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  )
               ],
             ),
             title: Text(otherUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
@@ -220,8 +261,6 @@ class ChatListItem extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                Text(formattedMessageTime, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
-                const SizedBox(height: 4),
                 if (unreadCount > 0)
                   CircleAvatar(
                     radius: 10,
@@ -230,7 +269,9 @@ class ChatListItem extends StatelessWidget {
                       unreadCount.toString(),
                       style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
                     ),
-                  ),
+                  )
+                else
+                  Text(formattedMessageTime, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
               ],
             ),
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(chatId: chat.id, otherUsername: otherUsername))),

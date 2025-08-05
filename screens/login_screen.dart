@@ -1,7 +1,8 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:freegram/main.dart'; // For AuthBloc
+// Removed unused imports
+// import 'package:flutter_bloc/flutter_bloc.dart';
+// import 'package:freegram/main.dart';
 import 'package:freegram/screens/signup_screen.dart';
 
 class LoginScreen extends StatefulWidget {

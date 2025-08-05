@@ -9,6 +9,11 @@ import 'package:freegram/services/firestore_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import 'package:timeago/timeago.dart' as timeago;
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as path;
+
+import 'profile_screen.dart';
 
 class ChatScreen extends StatefulWidget {
   final String chatId;
@@ -24,6 +29,7 @@ class _ChatScreenState extends State<ChatScreen> {
   final ImagePicker _picker = ImagePicker();
   Timer? _typingTimer;
   bool _isUploading = false;
+  final ScrollController _scrollController = ScrollController();
 
   // State for the reply feature
   String? _replyingToMessageId;
@@ -44,6 +50,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageController.removeListener(_onTyping);
     _messageController.dispose();
     _typingTimer?.cancel();
+    _scrollController.dispose();
     // Ensure typing status is set to false when leaving the screen
     _updateTypingStatus(false);
     super.dispose();
@@ -75,6 +82,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _typingTimer?.cancel();
       _updateTypingStatus(false);
 
+      if (!mounted) return;
       await context.read<FirestoreService>().sendMessage(
         chatId: widget.chatId,
         senderId: currentUser.uid,
@@ -90,14 +98,13 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// Uploads an image to Cloudinary and returns the URL.
-  Future<String?> _uploadToCloudinary(XFile image) async {
-    final url = Uri.parse('https://api.cloudinary.com/v1_1/dq0mb16fk/image/upload');
+  /// Uploads an image or audio file to Cloudinary and returns the URL.
+  Future<String?> _uploadToCloudinary(File file, {String resourceType = 'image'}) async {
+    final url = Uri.parse('https://api.cloudinary.com/v1_1/dq0mb16fk/$resourceType/upload');
     final request = http.MultipartRequest('POST', url)
       ..fields['upload_preset'] = 'Prototype';
 
-    final bytes = await image.readAsBytes();
-    final multipartFile = http.MultipartFile.fromBytes('file', bytes, filename: image.name);
+    final multipartFile = http.MultipartFile.fromBytes('file', await file.readAsBytes(), filename: path.basename(file.path));
     request.files.add(multipartFile);
 
     final response = await request.send();
@@ -107,12 +114,14 @@ class _ChatScreenState extends State<ChatScreen> {
       final jsonMap = jsonDecode(responseString);
       return jsonMap['secure_url'];
     } else {
+      debugPrint('Cloudinary upload failed with status: ${response.statusCode}');
       return null;
     }
   }
 
   /// Shows a bottom sheet to choose between camera and gallery, then sends the image.
   Future<void> _sendImage() async {
+    if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final source = await showModalBottomSheet<ImageSource>(
       context: context,
@@ -136,17 +145,18 @@ class _ChatScreenState extends State<ChatScreen> {
     );
 
     if (source == null) return;
-
     final XFile? pickedFile = await _picker.pickImage(source: source, imageQuality: 70);
     if (pickedFile == null) return;
 
+    if (!mounted) return;
     setState(() => _isUploading = true);
 
     try {
-      final imageUrl = await _uploadToCloudinary(pickedFile);
+      final imageUrl = await _uploadToCloudinary(File(pickedFile.path));
       if (imageUrl == null) throw Exception('Image upload failed');
 
       final currentUser = FirebaseAuth.instance.currentUser!;
+      if (!mounted) return;
       await context.read<FirestoreService>().sendMessage(
         chatId: widget.chatId,
         senderId: currentUser.uid,
@@ -188,7 +198,7 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// Shows a bottom sheet with message actions (react, reply, delete).
+  /// Shows a bottom sheet with message actions (react, reply, delete, edit).
   void _showMessageActions(BuildContext context, String messageId, Map<String, dynamic> messageData, bool isMe) {
     showModalBottomSheet(
       context: context,
@@ -221,6 +231,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   _startReply(messageId, messageData);
                 },
               ),
+              if (isMe && messageData['imageUrl'] == null) // Can only edit text messages
+                ListTile(
+                  leading: const Icon(Icons.edit),
+                  title: const Text('Edit'),
+                  onTap: () {
+                    Navigator.of(context).pop();
+                    _editMessage(messageId, messageData['text']);
+                  },
+                ),
               if (isMe)
                 ListTile(
                   leading: const Icon(Icons.delete, color: Colors.red),
@@ -237,9 +256,41 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
+  /// Edits a message, showing a dialog for user input.
+  void _editMessage(String messageId, String currentText) {
+    final TextEditingController editController = TextEditingController(text: currentText);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Edit Message'),
+        content: TextField(
+          controller: editController,
+          decoration: const InputDecoration(hintText: 'Enter new message'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              if (editController.text.trim().isNotEmpty) {
+                if (mounted) {
+                  context.read<FirestoreService>().editMessage(widget.chatId, messageId, editController.text.trim());
+                }
+              }
+              Navigator.of(context).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
   /// Builds the "is typing..." indicator.
-  Widget _buildTypingIndicator() {
-    final currentUser = FirebaseAuth.instance.currentUser!;
+  Widget _buildTypingIndicator(String otherUserId) {
     return StreamBuilder<DocumentSnapshot>(
       stream: context.read<FirestoreService>().getChatStream(widget.chatId),
       builder: (context, snapshot) {
@@ -247,9 +298,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
         final chatData = snapshot.data!.data() as Map<String, dynamic>;
         final typingStatus = chatData['typingStatus'] as Map<String, dynamic>? ?? {};
-        final otherUserId = typingStatus.keys.firstWhere((id) => id != currentUser.uid, orElse: () => '');
 
-        if (otherUserId.isNotEmpty && typingStatus[otherUserId] == true) {
+        if (typingStatus[otherUserId] == true) {
           return Padding(
             padding: const EdgeInsets.only(left: 16.0, bottom: 4.0),
             child: Row(
@@ -275,7 +325,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
     return Container(
       padding: const EdgeInsets.all(8.0),
-      color: Colors.grey.withAlpha(25),
+      color: Colors.grey.withOpacity(0.1),
       child: Row(
         children: [
           Expanded(
@@ -312,86 +362,165 @@ class _ChatScreenState extends State<ChatScreen> {
     final currentUser = FirebaseAuth.instance.currentUser!;
     final firestoreService = context.read<FirestoreService>();
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.otherUsername),
-        backgroundColor: Colors.white,
-        elevation: 1,
-      ),
-      body: Column(
-        children: [
-          if (_isUploading) const LinearProgressIndicator(),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: firestoreService.getMessagesStream(widget.chatId),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return const Center(child: Text('Say hello!'));
-                }
+    return StreamBuilder<DocumentSnapshot>(
+      stream: firestoreService.getChatStream(widget.chatId),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return Scaffold(appBar: AppBar(title: Text(widget.otherUsername), backgroundColor: Colors.white, elevation: 1));
+        }
 
-                // Mark messages as seen after the frame is built
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted) {
-                    firestoreService.markMessagesAsSeen(widget.chatId, currentUser.uid, snapshot.data!.docs);
-                  }
-                });
+        final chatData = snapshot.data!.data() as Map<String, dynamic>;
+        final otherUserId = (chatData['users'] as List).firstWhere((id) => id != currentUser.uid);
 
-                return ListView.builder(
-                  reverse: true,
-                  padding: const EdgeInsets.all(8.0),
-                  itemCount: snapshot.data!.docs.length,
-                  itemBuilder: (context, index) {
-                    final messageDoc = snapshot.data!.docs[index];
-                    return MessageBubble(
-                      messageDoc: messageDoc,
-                      isMe: messageDoc['senderId'] == currentUser.uid,
-                      onLongPress: () => _showMessageActions(context, messageDoc.id, messageDoc.data() as Map<String, dynamic>, messageDoc['senderId'] == currentUser.uid),
-                    );
+        return StreamBuilder<DocumentSnapshot>(
+          stream: firestoreService.getUserStream(otherUserId),
+          builder: (context, userSnapshot) {
+            final userData = userSnapshot.data?.data() as Map<String, dynamic>?;
+            final isOnline = userData?['presence'] ?? false;
+            final lastSeenTimestamp = userData?['lastSeen'] as Timestamp?;
+            final photoUrl = userData?['photoUrl'];
+
+            String statusText = 'Offline';
+            if (isOnline) {
+              statusText = 'Online';
+            } else if (lastSeenTimestamp != null) {
+              final now = DateTime.now();
+              final lastSeen = lastSeenTimestamp.toDate();
+              final difference = now.difference(lastSeen);
+              if (difference.inHours < 1) {
+                statusText = 'last seen ${difference.inMinutes}m ago';
+              } else if (difference.inHours < 24) {
+                statusText = 'last seen ${difference.inHours}h ago';
+              } else {
+                statusText = 'last seen ${timeago.format(lastSeen)}';
+              }
+            }
+
+            return Scaffold(
+              appBar: AppBar(
+                titleSpacing: 0,
+                backgroundColor: Colors.white,
+                elevation: 1,
+                title: GestureDetector(
+                  onTap: () {
+                    // Navigate to the other user's profile
+                    Navigator.of(context).push(MaterialPageRoute(
+                      builder: (_) => ProfileScreen(userId: otherUserId),
+                    ));
                   },
-                );
-              },
-            ),
-          ),
-          _buildTypingIndicator(),
-          Column(
-            children: [
-              _buildReplyPreview(),
-              Padding(
-                padding: const EdgeInsets.all(8.0),
-                child: Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.photo_camera, color: Color(0xFF3498DB)),
-                      onPressed: _isUploading ? null : _sendImage,
-                    ),
-                    Expanded(
-                      child: TextField(
-                        controller: _messageController,
-                        decoration: InputDecoration(
-                          hintText: 'Type a message...',
-                          filled: true,
-                          fillColor: Colors.white,
-                          border: OutlineInputBorder(
-                            borderRadius: BorderRadius.circular(20.0),
-                            borderSide: BorderSide.none,
-                          ),
-                        ),
+                  child: Row(
+                    children: [
+                      CircleAvatar(
+                        radius: 18,
+                        backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+                        child: (photoUrl == null || photoUrl.isEmpty)
+                            ? Text(widget.otherUsername.isNotEmpty ? widget.otherUsername[0].toUpperCase() : '?')
+                            : null,
                       ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.send, color: Color(0xFF3498DB)),
-                      onPressed: _isUploading ? null : _sendMessage,
-                    ),
-                  ],
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(widget.otherUsername, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                          Text(statusText, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ],
-          ),
-        ],
-      ),
+              body: Column(
+                children: [
+                  if (_isUploading) const LinearProgressIndicator(),
+                  Expanded(
+                    child: StreamBuilder<QuerySnapshot>(
+                      stream: firestoreService.getMessagesStream(widget.chatId),
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState == ConnectionState.waiting) {
+                          return const Center(child: CircularProgressIndicator());
+                        }
+                        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+                          return const Center(child: Text('Say hello!'));
+                        }
+
+                        // Mark messages as seen after the frame is built
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) {
+                            firestoreService.markMessagesAsSeen(widget.chatId, currentUser.uid, snapshot.data!.docs);
+                          }
+                        });
+
+                        final messages = snapshot.data!.docs;
+                        return ListView.builder(
+                          controller: _scrollController,
+                          reverse: true,
+                          padding: const EdgeInsets.all(8.0),
+                          itemCount: messages.length,
+                          itemBuilder: (context, index) {
+                            final messageDoc = messages[index];
+                            final previousMessageDoc = index + 1 < messages.length ? messages[index + 1] : null;
+
+                            final messageDate = (messageDoc['timestamp'] as Timestamp).toDate();
+                            final previousMessageDate = (previousMessageDoc?['timestamp'] as Timestamp?)?.toDate();
+
+                            // Show a date separator if the date is different from the previous message
+                            final bool showDateSeparator = previousMessageDate == null ||
+                                messageDate.day != previousMessageDate.day ||
+                                messageDate.month != previousMessageDate.month ||
+                                messageDate.year != previousMessageDate.year;
+
+                            return Column(
+                              children: [
+                                if (showDateSeparator)
+                                  DateSeparator(date: messageDate),
+                                MessageBubble(
+                                  messageDoc: messageDoc,
+                                  isMe: messageDoc['senderId'] == currentUser.uid,
+                                  onLongPress: () => _showMessageActions(context, messageDoc.id, messageDoc.data() as Map<String, dynamic>, messageDoc['senderId'] == currentUser.uid),
+                                ),
+                              ],
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                  _buildTypingIndicator(otherUserId),
+                  Padding(
+                    padding: const EdgeInsets.all(8.0),
+                    child: Row(
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.photo_camera, color: Color(0xFF3498DB)),
+                          onPressed: _isUploading ? null : _sendImage,
+                        ),
+                        Expanded(
+                          child: TextField(
+                            controller: _messageController,
+                            decoration: InputDecoration(
+                              hintText: 'Type a message...',
+                              filled: true,
+                              fillColor: Colors.white,
+                              border: OutlineInputBorder(
+                                borderRadius: BorderRadius.circular(20.0),
+                                borderSide: BorderSide.none,
+                              ),
+                            ),
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.send, color: Color(0xFF3498DB)),
+                          onPressed: _isUploading ? null : _sendMessage,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -416,6 +545,8 @@ class MessageBubble extends StatelessWidget {
     final String? imageUrl = message['imageUrl'];
     final bool isReply = message['replyToMessageId'] != null;
     final reactions = Map<String, dynamic>.from(message['reactions'] ?? {});
+    final Timestamp? timestamp = message['timestamp'] as Timestamp?;
+
 
     Widget messageContent;
     if (imageUrl != null) {
@@ -431,18 +562,49 @@ class MessageBubble extends StatelessWidget {
         ),
       );
     } else {
-      messageContent = Text(
-        message['text'] ?? '',
-        style: TextStyle(color: isMe ? Colors.white : Colors.black87),
+      messageContent = Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            message['text'] ?? '',
+            style: TextStyle(color: isMe ? Colors.white : Colors.black87),
+          ),
+          if (message['edited'] == true)
+            const Padding(
+              padding: EdgeInsets.only(top: 4.0),
+              child: Text(
+                'Edited',
+                style: TextStyle(fontSize: 10, color: Colors.white70),
+              ),
+            ),
+        ],
       );
     }
+
+    // Determine the delivery status icon based on the original request
+    IconData statusIcon = Icons.done;
+    Color statusColor = Colors.grey;
+    if (isMe) {
+      final bool isDelivered = message['isDelivered'] ?? false;
+      if (isSeen) {
+        statusIcon = Icons.done_all;
+        statusColor = Colors.blue;
+      } else if (isDelivered) {
+        statusIcon = Icons.done_all;
+        statusColor = Colors.grey;
+      } else {
+        statusIcon = Icons.done;
+        statusColor = Colors.grey;
+      }
+    }
+
 
     return GestureDetector(
       onLongPress: onLongPress,
       child: Align(
         alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-        child: Stack(
-          clipBehavior: Clip.none,
+        child: Column(
+          crossAxisAlignment: isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
             Row(
               mainAxisSize: MainAxisSize.min,
@@ -457,7 +619,7 @@ class MessageBubble extends StatelessWidget {
                       borderRadius: BorderRadius.circular(20.0),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.grey.withAlpha(51),
+                          color: Colors.grey.withOpacity(0.2),
                           spreadRadius: 1,
                           blurRadius: 2,
                           offset: const Offset(0, 1),
@@ -472,7 +634,7 @@ class MessageBubble extends StatelessWidget {
                           padding: const EdgeInsets.all(8.0),
                           margin: const EdgeInsets.only(bottom: 4.0),
                           decoration: BoxDecoration(
-                            color: isMe ? Colors.blue.shade700.withAlpha(128) : Colors.grey.withAlpha(51),
+                            color: isMe ? Colors.blue.withOpacity(0.5) : Colors.grey.withOpacity(0.1),
                             borderRadius: const BorderRadius.all(Radius.circular(12.0)),
                           ),
                           child: Column(
@@ -503,9 +665,9 @@ class MessageBubble extends StatelessWidget {
                   Padding(
                     padding: const EdgeInsets.only(left: 4.0, bottom: 4.0),
                     child: Icon(
-                      isSeen ? Icons.done_all : Icons.done,
+                      statusIcon,
                       size: 16,
-                      color: isSeen ? Colors.blue : Colors.grey,
+                      color: statusColor,
                     ),
                   ),
               ],
@@ -522,7 +684,7 @@ class MessageBubble extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.grey.withAlpha(128),
+                          color: Colors.grey.withOpacity(0.5),
                           spreadRadius: 1,
                           blurRadius: 1,
                         )
@@ -534,7 +696,58 @@ class MessageBubble extends StatelessWidget {
                   ),
                 ),
               ),
+            if (timestamp != null)
+              Padding(
+                padding: EdgeInsets.only(top: 4.0, left: isMe ? 0 : 8.0, right: isMe ? 8.0 : 0),
+                child: Text(
+                  timeago.format(timestamp.toDate(), locale: 'en_short'),
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: Colors.grey[600],
+                  ),
+                ),
+              ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A widget that displays a date separator in the chat.
+class DateSeparator extends StatelessWidget {
+  final DateTime date;
+  const DateSeparator({super.key, required this.date});
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final yesterday = DateTime(now.year, now.month, now.day - 1);
+    final formattedDate = DateTime(date.year, date.month, date.day);
+
+    String dateText;
+    if (formattedDate.isAtSameMomentAs(today)) {
+      dateText = 'Today';
+    } else if (formattedDate.isAtSameMomentAs(yesterday)) {
+      dateText = 'Yesterday';
+    } else {
+      dateText = '${date.month}/${date.day}/${date.year}';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16.0),
+      child: Center(
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+          decoration: BoxDecoration(
+            color: Colors.grey[300],
+            borderRadius: BorderRadius.circular(12.0),
+          ),
+          child: Text(
+            dateText,
+            style: const TextStyle(color: Colors.black54, fontSize: 12),
+          ),
         ),
       ),
     );

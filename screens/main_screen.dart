@@ -14,6 +14,9 @@ import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
 import 'package:freegram/seed_database.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:freegram/widgets/post_card.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart'; // Added missing import
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -70,7 +73,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   /// Updates user presence using the FirestoreService.
   Future<void> _updateUserPresence(String uid, bool isOnline) async {
     try {
-      await context.read<FirestoreService>().updateUserPresence(uid, isOnline);
+      if (mounted) {
+        await context.read<FirestoreService>().updateUserPresence(uid, isOnline);
+      }
     } catch (e) {
       debugPrint("Could not update presence: $e");
     }
@@ -82,10 +87,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await fcm.requestPermission();
     final token = await fcm.getToken();
     if (token != null) {
-      await context.read<FirestoreService>().updateUser(uid, {'fcmToken': token});
+      if (mounted) {
+        await context.read<FirestoreService>().updateUser(uid, {'fcmToken': token});
+      }
     }
     fcm.onTokenRefresh.listen((newToken) async {
-      await context.read<FirestoreService>().updateUser(uid, {'fcmToken': newToken});
+      if (mounted) {
+        await context.read<FirestoreService>().updateUser(uid, {'fcmToken': newToken});
+      }
     });
   }
 
@@ -143,7 +152,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildChatIconWithBadge() {
-    final authState = context.read<AuthBloc>().state;
+    final authState = context.watch<AuthBloc>().state;
     if (authState is Authenticated) {
       return StreamBuilder<int>(
         stream: context.read<FirestoreService>().getUnreadChatCountStream(authState.user.uid),
@@ -161,7 +170,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   Widget _buildActivityIconWithBadge() {
-    final authState = context.read<AuthBloc>().state;
+    final authState = context.watch<AuthBloc>().state;
     if (authState is Authenticated) {
       return StreamBuilder<int>(
         stream: context.read<FirestoreService>().getUnreadNotificationCountStream(authState.user.uid),
@@ -266,13 +275,142 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 }
 
 // Placeholder for the FeedWidget. This should be moved to its own file.
-class FeedWidget extends StatelessWidget {
+class FeedWidget extends StatefulWidget {
   const FeedWidget({super.key});
 
   @override
+  State<FeedWidget> createState() => _FeedWidgetState();
+}
+
+class _FeedWidgetState extends State<FeedWidget> {
+  final _scrollController = ScrollController();
+  List<DocumentSnapshot> _posts = [];
+  bool _isLoading = false;
+  bool _isFetchingMore = false;
+  bool _hasMore = true;
+  DocumentSnapshot? _lastDocument;
+  final int _postLimit = 10;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchFeedPosts();
+    _scrollController.addListener(() {
+      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 300 && !_isFetchingMore) {
+        _fetchFeedPosts();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _fetchFeedPosts({bool isRefresh = false}) async {
+    if (_isFetchingMore || !_hasMore) return;
+    if (isRefresh) {
+      _posts = [];
+      _lastDocument = null;
+      _hasMore = true;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isFetchingMore = true;
+      if (_posts.isEmpty) _isLoading = true;
+    });
+
+    final currentUser = FirebaseAuth.instance.currentUser;
+    if (currentUser == null) {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isFetchingMore = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      final firestoreService = context.read<FirestoreService>();
+      final userDoc = await firestoreService.getUser(currentUser.uid);
+      final userData = userDoc.data() as Map<String, dynamic>;
+      final List<String> followingIds = List<String>.from(userData['following'] ?? []);
+      followingIds.add(currentUser.uid); // Add current user to see their own posts
+
+      final QuerySnapshot querySnapshot = await firestoreService.getFeedPosts(
+        followingIds,
+        lastDocument: _lastDocument,
+      );
+
+      if (querySnapshot.docs.length < _postLimit) {
+        _hasMore = false;
+      }
+      if (querySnapshot.docs.isNotEmpty) {
+        _lastDocument = querySnapshot.docs.last;
+        _posts.addAll(querySnapshot.docs);
+      }
+    } catch (e) {
+      debugPrint("Error fetching feed posts: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load posts: $e')),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _isFetchingMore = false;
+        });
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Text('Feed Screen'),
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_posts.isEmpty) {
+      return Center(
+        child: RefreshIndicator(
+          onRefresh: () => _fetchFeedPosts(isRefresh: true),
+          child: const SingleChildScrollView(
+            physics: AlwaysScrollableScrollPhysics(),
+            child: SizedBox(
+              height: 300,
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text('No posts to show. Start following people!'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: () => _fetchFeedPosts(isRefresh: true),
+      child: ListView.builder(
+        controller: _scrollController,
+        itemCount: _posts.length + (_hasMore ? 1 : 0),
+        itemBuilder: (context, index) {
+          if (index == _posts.length) {
+            if (_isFetchingMore) {
+              return const Center(child: CircularProgressIndicator());
+            } else {
+              return const SizedBox();
+            }
+          }
+          return PostCard(post: _posts[index]);
+        },
+      ),
     );
   }
 }

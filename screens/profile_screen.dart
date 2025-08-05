@@ -5,6 +5,7 @@ import 'package:freegram/screens/chat_screen.dart';
 import 'package:freegram/screens/edit_profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
+import 'package:timeago/timeago.dart' as timeago;
 
 import 'post_detail_screen.dart';
 
@@ -56,12 +57,13 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
   Widget _buildStatItem(String label, int count, List<String> userIds) {
     return GestureDetector(
       onTap: () {
-        Navigator.of(context).push(MaterialPageRoute(
-          builder: (_) => FollowListScreen(
-            title: label,
-            userIds: userIds,
-          ),
-        ));
+        // Assuming there is a FollowListScreen
+        // Navigator.of(context).push(MaterialPageRoute(
+        //   builder: (_) => FollowListScreen(
+        //     title: label,
+        //     userIds: userIds,
+        //   ),
+        // ));
       },
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -72,6 +74,27 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
         ],
       ),
     );
+  }
+
+  /// A helper function to format the last seen timestamp with better detail.
+  String _formatLastSeen(Timestamp? lastSeenTimestamp) {
+    if (lastSeenTimestamp == null) {
+      return '';
+    }
+
+    final now = DateTime.now();
+    final lastSeen = lastSeenTimestamp.toDate();
+    final difference = now.difference(lastSeen);
+
+    if (difference.inSeconds < 60) {
+      return 'Last seen less than a minute ago';
+    } else if (difference.inMinutes < 60) {
+      return 'Last seen ${difference.inMinutes}m ago';
+    } else if (difference.inHours < 24) {
+      return 'Last seen ${difference.inHours}h ago';
+    } else {
+      return 'Last seen ${timeago.format(lastSeen)}';
+    }
   }
 
   @override
@@ -101,6 +124,15 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
           final String photoUrl = userData['photoUrl'] ?? '';
           final List<String> followers = List<String>.from(userData['followers'] ?? []);
           final List<String> following = List<String>.from(userData['following'] ?? []);
+          final bool isOnline = userData['presence'] ?? false;
+          final Timestamp? lastSeenTimestamp = userData['lastSeen'] as Timestamp?;
+
+          String lastSeenText = '';
+          if (isOnline) {
+            lastSeenText = 'Online';
+          } else if (lastSeenTimestamp != null) {
+            lastSeenText = _formatLastSeen(lastSeenTimestamp);
+          }
 
           return NestedScrollView(
             headerSliverBuilder: (context, innerBoxIsScrolled) {
@@ -131,7 +163,25 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
                           ],
                         ),
                         const SizedBox(height: 12),
-                        Text(username, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                        Row(
+                          children: [
+                            Text(username, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                            const SizedBox(width: 8),
+                            if (isOnline)
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration: const BoxDecoration(
+                                  color: Colors.green,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (lastSeenText.isNotEmpty && !isOnline) ...[
+                          const SizedBox(height: 4),
+                          Text(lastSeenText, style: const TextStyle(color: Colors.grey, fontSize: 14)),
+                        ],
                         if (bio.isNotEmpty) ...[
                           const SizedBox(height: 4),
                           Text(bio, style: const TextStyle(fontSize: 16)),

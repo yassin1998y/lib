@@ -399,6 +399,7 @@ class FirestoreService {
       'senderId': senderId,
       'timestamp': FieldValue.serverTimestamp(),
       'isSeen': false,
+      'isDelivered': true,
       'reactions': {},
       'replyToMessageId': replyToMessageId,
       'replyToMessageText': replyToMessageText,
@@ -410,6 +411,9 @@ class FirestoreService {
     final List<dynamic> users = (chatDoc.data() as Map<String, dynamic>)['users'];
     final otherUserId = users.firstWhere((id) => id != senderId);
 
+    // TODO: Implement logic to send a push notification to the other user's FCM token.
+    // When the push notification is successfully received, update `isDelivered` to `true`.
+    // For now, we'll assume it's delivered instantly.
     await chatRef.update({
       'lastMessage': imageUrl != null ? '📷 Photo' : text,
       'lastMessageIsImage': imageUrl != null,
@@ -417,6 +421,17 @@ class FirestoreService {
       'unreadCount.$otherUserId': FieldValue.increment(1),
     });
   }
+
+  /// Edits an existing message.
+  Future<void> editMessage(String chatId, String messageId, String newText) {
+    final messageRef = _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
+    return messageRef.update({
+      'text': newText,
+      'edited': true,
+      'timestamp': FieldValue.serverTimestamp(),
+    });
+  }
+
 
   /// Deletes a message from a chat.
   Future<void> deleteMessage(String chatId, String messageId) {

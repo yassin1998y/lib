@@ -111,7 +111,8 @@ class MobileBluetoothService implements BluetoothService {
       return;
     }
 
-    if (!await _requestPermissions()) return;
+    final bool permissionsGranted = await _requestPermissions();
+    if (!permissionsGranted) return;
 
     bluetoothStatusService.updateStatus(NearbyStatus.checkingAdapter);
     _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
