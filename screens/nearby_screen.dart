@@ -1,12 +1,12 @@
 import 'dart:async';
-
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:freegram/main.dart'; // For BluetoothService and status service
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/widgets/sonar_view.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
-import 'package:timeago/timeago.dart' as timeago;
 
 class NearbyScreen extends StatefulWidget {
   const NearbyScreen({super.key});
@@ -16,211 +16,304 @@ class NearbyScreen extends StatefulWidget {
 }
 
 class _NearbyScreenState extends State<NearbyScreen> {
-  late final BluetoothService _bluetoothService;
+  // Use the specific MobileBluetoothService to access scan controls
+  late final MobileBluetoothService _bluetoothService;
   late final Box _contactsBox;
   StreamSubscription? _statusSubscription;
   NearbyStatus _currentStatus = NearbyStatus.idle;
+  bool _isScanning = false;
+
+  // Store user profiles to avoid repeated lookups
+  final Map<String, Map<String, dynamic>> _userProfileCache = {};
+  final Random _random = Random();
 
   @override
   void initState() {
     super.initState();
-    // Initialize and start the Bluetooth service
-    _bluetoothService = BluetoothService();
-    _bluetoothService.start();
+    final btService = BluetoothService();
+    if (btService is MobileBluetoothService) {
+      _bluetoothService = btService;
+      _bluetoothService.start(); // Initialize permissions and adapter state
+    }
 
-    // Open the Hive box for nearby contacts
     _contactsBox = Hive.box('nearby_contacts');
+    _loadInitialProfiles();
 
-    // Listen to status updates from the Bluetooth service
     _statusSubscription = bluetoothStatusService.statusStream.listen((status) {
       if (mounted) {
-        setState(() {
-          _currentStatus = status;
-        });
+        setState(() => _currentStatus = status);
+        if (status == NearbyStatus.userFound) {
+          _loadInitialProfiles(); // Refresh profiles when a new user is found
+        }
       }
     });
   }
 
   @override
   void dispose() {
-    // Stop the Bluetooth service and cancel subscriptions to prevent memory leaks
-    _bluetoothService.stop();
+    // Only stop the service if it was scanning
+    if (_isScanning) {
+      _bluetoothService.stopScanning();
+    }
     _statusSubscription?.cancel();
     super.dispose();
   }
 
-  /// Fetches a user's profile, first checking the local cache and then Firestore.
-  Future<Map<String, dynamic>?> _fetchUserProfile(String userId) async {
-    final profileBox = Hive.box('user_profiles');
-    // Return cached data if available
-    if (profileBox.containsKey(userId)) {
-      return Map<String, dynamic>.from(profileBox.get(userId));
+  /// Toggles the Bluetooth scanning state.
+  void _toggleScan(bool value) {
+    setState(() {
+      _isScanning = value;
+    });
+    if (_isScanning) {
+      _bluetoothService.startScanning();
+    } else {
+      _bluetoothService.stopScanning();
     }
+  }
 
-    // Otherwise, fetch from Firestore
+  /// Pre-loads profiles for all contacts in the Hive box.
+  Future<void> _loadInitialProfiles() async {
+    for (var key in _contactsBox.keys) {
+      if (!_userProfileCache.containsKey(key)) {
+        await _fetchUserProfile(key);
+      }
+    }
+    if (mounted) setState(() {});
+  }
+
+  /// Fetches a user's profile and caches it.
+  Future<void> _fetchUserProfile(String userId) async {
+    final profileBox = Hive.box('user_profiles');
+    if (profileBox.containsKey(userId)) {
+      _userProfileCache[userId] = Map<String, dynamic>.from(profileBox.get(userId));
+      return;
+    }
     try {
       final doc = await context.read<FirestoreService>().getUser(userId);
       if (doc.exists) {
         final data = doc.data() as Map<String, dynamic>;
-        // Cache the newly fetched data
         profileBox.put(userId, data);
-        return data;
+        _userProfileCache[userId] = data;
       }
     } catch (e) {
       debugPrint("Error fetching user profile for $userId: $e");
     }
-    return null;
   }
 
   /// Provides a user-friendly message based on the current Bluetooth status.
   String _getStatusMessage(NearbyStatus status) {
+    if (_isScanning) {
+      if (status == NearbyStatus.scanning) return "Scanning for nearby users...";
+      if (status == NearbyStatus.advertising) return "Broadcasting your signal...";
+      if (status == NearbyStatus.userFound) return "Found a new user!";
+    }
     switch (status) {
       case NearbyStatus.idle:
-        return "Ready to start.";
-      case NearbyStatus.checkingPermissions:
-        return "Checking permissions...";
+        return "Ready to scan.";
       case NearbyStatus.permissionsDenied:
-        return "Permissions denied. Please grant permissions in settings.";
-      case NearbyStatus.checkingAdapter:
-        return "Checking Bluetooth adapter...";
+        return "Permissions denied. Grant in settings.";
       case NearbyStatus.adapterOff:
         return "Please turn on Bluetooth.";
-      case NearbyStatus.startingServices:
-        return "Starting services...";
-      case NearbyStatus.advertising:
-        return "Broadcasting your signal...";
-      case NearbyStatus.scanning:
-        return "Scanning for nearby users...";
-      case NearbyStatus.userFound:
-        return "Found a user! Saving contact...";
       case NearbyStatus.error:
-        return "An error occurred. Please try again.";
+        return "An error occurred. Try again.";
       default:
         return "Initializing...";
     }
+  }
+
+  /// Deletes a user from the found list, allowing them to be rediscovered.
+  void _deleteFoundUser(String userId) {
+    _contactsBox.delete(userId);
+    _userProfileCache.remove(userId);
+    if (mounted) setState(() {});
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('User removed. They can be discovered again.')),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Nearby Users'),
-        backgroundColor: Colors.white,
-        elevation: 1,
+        title: const Text('Nearby'),
       ),
       body: Column(
         children: [
-          // Status bar to show the current state of the Bluetooth service
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            color: Colors.blue.withOpacity(0.1),
-            child: Row(
-              children: [
-                if (_currentStatus == NearbyStatus.scanning || _currentStatus == NearbyStatus.advertising)
-                  const SizedBox(
-                    height: 16,
-                    width: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                else
-                  Icon(
-                    _currentStatus == NearbyStatus.error || _currentStatus == NearbyStatus.permissionsDenied
-                        ? Icons.error_outline
-                        : Icons.check_circle_outline,
-                    color: _currentStatus == NearbyStatus.error || _currentStatus == NearbyStatus.permissionsDenied
-                        ? Colors.red
-                        : Colors.green,
-                    size: 20,
-                  ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    _getStatusMessage(_currentStatus),
-                    style: const TextStyle(fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ],
-            ),
+          // --- Sonar and Control Section ---
+          _buildSonarSection(),
+          const Divider(height: 1),
+          // --- Found Users Section ---
+          _buildFoundUsersSection(),
+        ],
+      ),
+    );
+  }
+
+  /// Builds the top section with the sonar view and controls.
+  Widget _buildSonarSection() {
+    return Container(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Sonar Scan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  Text(_getStatusMessage(_currentStatus), style: const TextStyle(color: Colors.grey)),
+                ],
+              ),
+              Switch(
+                value: _isScanning,
+                onChanged: _toggleScan,
+              ),
+            ],
           ),
-          // Reactive list that updates whenever the Hive box changes
-          Expanded(
-            child: ValueListenableBuilder(
-              valueListenable: _contactsBox.listenable(),
-              builder: (context, Box box, _) {
-                final contacts = box.values.map((e) {
-                  final contact = Map<String, dynamic>.from(e);
-                  contact['timestamp'] = DateTime.parse(contact['timestamp']);
-                  return contact;
-                }).toList();
-
-                // Sort contacts by most recently found
-                contacts.sort((a, b) => (b['timestamp'] as DateTime).compareTo(a['timestamp'] as DateTime));
-
-                if (contacts.isEmpty) {
-                  return const Center(
-                    child: Padding(
-                      padding: EdgeInsets.all(16.0),
-                      child: Text(
-                        "Keep this screen open to discover others. Make sure your Bluetooth is on.",
-                        textAlign: TextAlign.center,
-                        style: TextStyle(color: Colors.grey, fontSize: 16),
-                      ),
-                    ),
-                  );
-                }
-
-                return ListView.builder(
-                  itemCount: contacts.length,
-                  itemBuilder: (context, index) {
-                    final contact = contacts[index];
-                    final String userId = contact['id'];
-                    final DateTime timestamp = contact['timestamp'];
-
-                    return FutureBuilder<Map<String, dynamic>?>(
-                      future: _fetchUserProfile(userId),
-                      builder: (context, snapshot) {
-                        if (snapshot.connectionState == ConnectionState.waiting && !snapshot.hasData) {
-                          return ListTile(
-                            title: const Text('Loading user...'),
-                            subtitle: Text('Found ${timeago.format(timestamp)}'),
-                            leading: const CircleAvatar(backgroundColor: Colors.grey),
-                          );
-                        }
-                        if (snapshot.hasError || !snapshot.hasData || snapshot.data == null) {
-                          return ListTile(
-                            title: const Text('Unknown User'),
-                            subtitle: Text('ID: $userId'),
-                            leading: const CircleAvatar(child: Icon(Icons.error)),
-                          );
-                        }
-
-                        final userData = snapshot.data!;
-                        final username = userData['username'] ?? 'No Name';
-                        final photoUrl = userData['photoUrl'];
-
-                        return Card(
-                          margin: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-                              child: (photoUrl == null || photoUrl.isEmpty)
-                                  ? Text(username.isNotEmpty ? username[0].toUpperCase() : '?')
-                                  : null,
-                            ),
-                            title: Text(username, style: const TextStyle(fontWeight: FontWeight.bold)),
-                            subtitle: Text('Found ${timeago.format(timestamp)}'),
-                            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
-                          ),
-                        );
-                      },
-                    );
-                  },
-                );
-              },
+          const SizedBox(height: 16),
+          SizedBox(
+            height: 200,
+            child: SonarView(
+              isScanning: _isScanning,
+              foundUserAvatars: _buildSonarAvatars(),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  /// Creates a list of positioned CircleAvatar widgets for the SonarView.
+  List<Widget> _buildSonarAvatars() {
+    final List<Widget> avatars = [];
+    final sonarRadius = 100.0; // The radius of the sonar view area
+
+    _userProfileCache.forEach((userId, userData) {
+      final photoUrl = userData['photoUrl'];
+      // Generate a stable random position based on the user ID
+      final random = Random(userId.hashCode);
+      final angle = random.nextDouble() * 2 * pi;
+      final distance = (random.nextDouble() * 0.6 + 0.2) * sonarRadius; // 20% to 80% of radius
+
+      final position = Offset(
+        cos(angle) * distance + sonarRadius - 20, // Centering logic
+        sin(angle) * distance + sonarRadius - 20,
+      );
+
+      avatars.add(
+        Positioned(
+          left: position.dx,
+          top: position.dy,
+          child: CircleAvatar(
+            radius: 20,
+            backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+            child: (photoUrl == null || photoUrl.isEmpty) ? const Icon(Icons.person) : null,
+          ),
+        ),
+      );
+    });
+    return avatars;
+  }
+
+  /// Builds the bottom section with the grid of found users.
+  Widget _buildFoundUsersSection() {
+    return Expanded(
+      child: ValueListenableBuilder(
+        valueListenable: _contactsBox.listenable(),
+        builder: (context, Box box, _) {
+          final contacts = box.keys.toList();
+          if (contacts.isEmpty) {
+            return const Center(
+              child: Text("No users found yet.", style: TextStyle(color: Colors.grey)),
+            );
+          }
+          return GridView.builder(
+            padding: const EdgeInsets.all(8.0),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 4,
+              crossAxisSpacing: 8,
+              mainAxisSpacing: 8,
+              childAspectRatio: 0.8,
+            ),
+            itemCount: contacts.length,
+            itemBuilder: (context, index) {
+              final userId = contacts[index];
+              final userData = _userProfileCache[userId];
+
+              if (userData == null) {
+                // Show a placeholder while the profile is being fetched
+                return const Card(child: Center(child: CircularProgressIndicator()));
+              }
+              return CompactNearbyUserCard(
+                userData: userData,
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
+                onDelete: () => _deleteFoundUser(userId),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+/// A compact card for displaying a found user in the grid.
+class CompactNearbyUserCard extends StatelessWidget {
+  final Map<String, dynamic> userData;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+
+  const CompactNearbyUserCard({
+    super.key,
+    required this.userData,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final photoUrl = userData['photoUrl'];
+    final username = userData['username'] ?? 'User';
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Card(
+        clipBehavior: Clip.antiAlias,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: GridTile(
+          footer: Container(
+            padding: const EdgeInsets.symmetric(vertical: 2.0),
+            color: Colors.black.withOpacity(0.5),
+            child: Text(
+              username,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.white, fontSize: 12),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          header: Align(
+            alignment: Alignment.topRight,
+            child: GestureDetector(
+              onTap: onDelete,
+              child: Container(
+                margin: const EdgeInsets.all(4.0),
+                decoration: BoxDecoration(
+                  color: Colors.black.withOpacity(0.6),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.close, color: Colors.white, size: 16),
+              ),
+            ),
+          ),
+          child: (photoUrl != null && photoUrl.isNotEmpty)
+              ? Image.network(
+            photoUrl,
+            fit: BoxFit.cover,
+            errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
+          )
+              : const Icon(Icons.person, size: 40, color: Colors.grey),
+        ),
       ),
     );
   }

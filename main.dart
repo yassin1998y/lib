@@ -102,7 +102,8 @@ class MobileBluetoothService implements BluetoothService {
 
   @override
   Future<void> start() async {
-    await stop();
+    // This method now only initializes permissions and adapter state.
+    // Scanning and advertising are started manually.
     bluetoothStatusService.updateStatus(NearbyStatus.startingServices);
 
     if (await FlutterBluePlus.isSupported == false) {
@@ -117,15 +118,33 @@ class MobileBluetoothService implements BluetoothService {
     bluetoothStatusService.updateStatus(NearbyStatus.checkingAdapter);
     _adapterStateSubscription = FlutterBluePlus.adapterState.listen((state) {
       debugPrint("[Bluetooth] Adapter state changed to: $state");
-      if (state == BluetoothAdapterState.on) {
-        _startAdvertising();
-        _startScanning();
-      } else {
+      if (state != BluetoothAdapterState.on) {
         bluetoothStatusService.updateStatus(NearbyStatus.adapterOff);
-        stop();
+        stop(); // Stop all services if adapter is turned off
+      } else {
+        bluetoothStatusService.updateStatus(NearbyStatus.idle); // Ready to scan
       }
     });
   }
+
+  Future<void> startScanning() async {
+    if (_isScanning) return;
+    _isScanning = true;
+
+    // Start both advertising and scanning when toggled on
+    await _startAdvertising();
+    _startDeviceScan();
+  }
+
+  Future<void> stopScanning() async {
+    if (!_isScanning) return;
+    _isScanning = false;
+
+    await _stopAdvertising();
+    await _stopDeviceScan();
+    bluetoothStatusService.updateStatus(NearbyStatus.idle);
+  }
+
 
   Future<void> _startAdvertising() async {
     final currentUser = FirebaseAuth.instance.currentUser;
@@ -148,9 +167,7 @@ class MobileBluetoothService implements BluetoothService {
     }
   }
 
-  void _startScanning() {
-    if (_isScanning) return;
-    _isScanning = true;
+  void _startDeviceScan() {
     debugPrint("[Bluetooth] Starting scan...");
     bluetoothStatusService.updateStatus(NearbyStatus.scanning);
 
@@ -174,7 +191,6 @@ class MobileBluetoothService implements BluetoothService {
       FlutterBluePlus.startScan(timeout: null);
     } catch (e) {
       debugPrint("[Bluetooth] Could not start scan: $e");
-      _isScanning = false;
       bluetoothStatusService.updateStatus(NearbyStatus.error);
     }
   }
@@ -182,29 +198,36 @@ class MobileBluetoothService implements BluetoothService {
   void _handleFoundUser(String foundUserId) {
     final box = Hive.box('nearby_contacts');
     final existingContact = box.get(foundUserId);
+    // Only add if new, or if found again after an hour.
     if (existingContact == null || DateTime.now().difference(DateTime.parse(existingContact['timestamp'])).inHours >= 1) {
       debugPrint("[Bluetooth] New or expired contact found. Saving card for user: $foundUserId");
       box.put(foundUserId, {'id': foundUserId, 'timestamp': DateTime.now().toIso8601String()});
     }
   }
 
-  @override
-  Future<void> stop() async {
-    debugPrint("[Bluetooth] Stopping services...");
-    bluetoothStatusService.updateStatus(NearbyStatus.idle);
-    _adapterStateSubscription?.cancel();
+  Future<void> _stopAdvertising() async {
+    try {
+      if (await _blePeripheral.isAdvertising) await _blePeripheral.stop();
+    } catch (e) {
+      debugPrint("[Bluetooth] Error stopping advertising: $e");
+    }
+  }
+
+  Future<void> _stopDeviceScan() async {
     _scanSubscription?.cancel();
     try {
       if (await FlutterBluePlus.isScanningNow) await FlutterBluePlus.stopScan();
     } catch (e) {
       debugPrint("[Bluetooth] Error stopping scan: $e");
     }
-    try {
-      if (await _blePeripheral.isAdvertising) await _blePeripheral.stop();
-    } catch (e) {
-      debugPrint("[Bluetooth] Error stopping advertising: $e");
-    }
-    _isScanning = false;
+  }
+
+
+  @override
+  Future<void> stop() async {
+    debugPrint("[Bluetooth] Stopping all services...");
+    await stopScanning();
+    _adapterStateSubscription?.cancel();
   }
 
   @override

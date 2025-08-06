@@ -462,6 +462,18 @@ class FirestoreService {
     batch.commit();
   }
 
+  /// **NEW:** Marks a list of messages as seen in a single batch write.
+  Future<void> markMultipleMessagesAsSeen(String chatId, List<String> messageIds) {
+    if (messageIds.isEmpty) return Future.value();
+    final batch = _db.batch();
+    for (final messageId in messageIds) {
+      final messageRef = _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
+      batch.update(messageRef, {'isSeen': true});
+    }
+    return batch.commit();
+  }
+
+
   /// Gets a real-time stream of messages in a chat.
   Stream<QuerySnapshot> getMessagesStream(String chatId) {
     return _db.collection('chats').doc(chatId).collection('messages').orderBy('timestamp', descending: true).snapshots();
