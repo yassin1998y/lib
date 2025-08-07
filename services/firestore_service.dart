@@ -3,10 +3,99 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart' as rtdb;
 import 'package:flutter/material.dart';
 import 'package:freegram/screens/chat_screen.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
+  final FirebaseAuth _auth = FirebaseAuth.instance; // Add auth instance
   final rtdb.FirebaseDatabase _rtdb = rtdb.FirebaseDatabase.instance;
+  final GoogleSignIn _googleSignIn = GoogleSignIn(); // Add GoogleSignIn instance
+
+  // --- Auth Methods (NEW SECTION) ---
+
+  /// Sign in with Google and create a user record if one doesn't exist.
+  Future<UserCredential> signInWithGoogle() async {
+    final GoogleSignInAccount? googleUser = await _googleSignIn.signIn();
+    if (googleUser == null) {
+      throw FirebaseAuthException(
+          code: 'ERROR_ABORTED_BY_USER', message: 'Sign in aborted by user');
+    }
+    final GoogleSignInAuthentication googleAuth =
+    await googleUser.authentication;
+    final AuthCredential credential = GoogleAuthProvider.credential(
+      accessToken: googleAuth.accessToken,
+      idToken: googleAuth.idToken,
+    );
+    final userCredential = await _auth.signInWithCredential(credential);
+    final user = userCredential.user;
+
+    if (user != null) {
+      // Check if this is a new user
+      final userDoc = await _db.collection('users').doc(user.uid).get();
+      if (!userDoc.exists) {
+        // Create a new user document in Firestore
+        await createUser(
+          uid: user.uid,
+          username: user.displayName ?? 'Google User',
+          email: user.email ?? '',
+          photoUrl: user.photoURL, // Add photoUrl on creation
+        );
+      }
+    }
+    return userCredential;
+  }
+
+  /// Sign in with Facebook and create a user record if one doesn't exist.
+  Future<UserCredential> signInWithFacebook() async {
+    final LoginResult result = await FacebookAuth.instance.login();
+    if (result.status == LoginStatus.success) {
+      final AccessToken accessToken = result.accessToken!;
+      final AuthCredential credential =
+      FacebookAuthProvider.credential(accessToken.token);
+      final userCredential = await _auth.signInWithCredential(credential);
+      final user = userCredential.user;
+
+      if (user != null) {
+        // Check if this is a new user
+        final userDoc = await _db.collection('users').doc(user.uid).get();
+        if (!userDoc.exists) {
+          // Fetch user data from Facebook Graph API
+          final userData = await FacebookAuth.instance.getUserData();
+          await createUser(
+            uid: user.uid,
+            username: userData['name'] ?? 'Facebook User',
+            email: userData['email'] ?? '',
+            photoUrl: userData['picture']?['data']?['url'], // Add photoUrl
+          );
+        }
+      }
+      return userCredential;
+    } else {
+      throw FirebaseAuthException(
+        code: 'ERROR_FACEBOOK_LOGIN_FAILED',
+        message: result.message,
+      );
+    }
+  }
+
+  /// Sign out from Firebase and social providers robustly.
+  Future<void> signOut() async {
+    try {
+      // Attempt to sign out from Google, but don't let it block the core logout.
+      await _googleSignIn.signOut();
+    } catch (e) {
+      debugPrint("Error signing out from Google: $e");
+    }
+    try {
+      // Attempt to sign out from Facebook, but don't let it block the core logout.
+      await FacebookAuth.instance.logOut();
+    } catch (e) {
+      debugPrint("Error signing out from Facebook: $e");
+    }
+    // The essential part: sign out from Firebase. This will trigger the state change.
+    await _auth.signOut();
+  }
 
   // --- User Methods ---
 
@@ -15,6 +104,7 @@ class FirestoreService {
     required String uid,
     required String username,
     required String email,
+    String? photoUrl, // Make photoUrl optional
   }) {
     return _db.collection('users').doc(uid).set({
       'username': username,
@@ -22,7 +112,7 @@ class FirestoreService {
       'followers': [],
       'following': [],
       'bio': '',
-      'photoUrl': '',
+      'photoUrl': photoUrl ?? '', // Use provided photoUrl or empty string
       'fcmToken': '',
       'presence': false,
       'lastSeen': FieldValue.serverTimestamp(),
@@ -66,7 +156,8 @@ class FirestoreService {
   }
 
   /// Adds a user to the current user's following list and the current user to the other user's followers list.
-  Future<void> followUser(String currentUserId, String userIdToFollow) async {
+  Future<void> followUser(
+      String currentUserId, String userIdToFollow) async {
     await _db.collection('users').doc(currentUserId).update({
       'following': FieldValue.arrayUnion([userIdToFollow])
     });
@@ -86,7 +177,8 @@ class FirestoreService {
   }
 
   /// Removes a user from the current user's following list and the current user from the other user's followers list.
-  Future<void> unfollowUser(String currentUserId, String userIdToUnfollow) async {
+  Future<void> unfollowUser(
+      String currentUserId, String userIdToUnfollow) async {
     await _db.collection('users').doc(currentUserId).update({
       'following': FieldValue.arrayRemove([userIdToUnfollow])
     });
@@ -96,7 +188,8 @@ class FirestoreService {
   }
 
   /// Fetches a paginated list of users for the Explore tab.
-  Future<QuerySnapshot> getPaginatedUsers({required int limit, DocumentSnapshot? lastDocument}) {
+  Future<QuerySnapshot> getPaginatedUsers(
+      {required int limit, DocumentSnapshot? lastDocument}) {
     Query query = _db.collection('users').orderBy('username').limit(limit);
     if (lastDocument != null) {
       query = query.startAfterDocument(lastDocument);
@@ -105,7 +198,8 @@ class FirestoreService {
   }
 
   /// Fetches a list of recommended users based on shared interests.
-  Future<List<DocumentSnapshot>> getRecommendedUsers(List<String> interests, String currentUserId) async {
+  Future<List<DocumentSnapshot>> getRecommendedUsers(
+      List<String> interests, String currentUserId) async {
     if (interests.isEmpty) return [];
     final querySnapshot = await _db
         .collection('users')
@@ -126,9 +220,10 @@ class FirestoreService {
 
   /// Syncs contacts found via Bluetooth to the user's Firestore document.
   Future<void> syncNearbyContacts(String userId, List<String> contactIds) {
-    return _db.collection('users').doc(userId).update({
-      'nearbyContacts': FieldValue.arrayUnion(contactIds)
-    });
+    return _db
+        .collection('users')
+        .doc(userId)
+        .update({'nearbyContacts': FieldValue.arrayUnion(contactIds)});
   }
 
   // --- Post & Comment Methods ---
@@ -178,7 +273,8 @@ class FirestoreService {
     required String postImageUrl,
     required Map<String, dynamic> currentUserData,
   }) async {
-    final likeRef = _db.collection('posts').doc(postId).collection('likes').doc(userId);
+    final likeRef =
+    _db.collection('posts').doc(postId).collection('likes').doc(userId);
     final likeDoc = await likeRef.get();
 
     if (likeDoc.exists) {
@@ -234,7 +330,8 @@ class FirestoreService {
   }
 
   /// Fetches posts for a user's feed (posts from people they follow).
-  Future<QuerySnapshot> getFeedPosts(List<String> followingIds, {DocumentSnapshot? lastDocument}) {
+  Future<QuerySnapshot> getFeedPosts(List<String> followingIds,
+      {DocumentSnapshot? lastDocument}) {
     var query = _db
         .collection('posts')
         .where('userId', whereIn: followingIds)
@@ -248,7 +345,11 @@ class FirestoreService {
 
   /// Gets a real-time stream of a user's own posts for their profile.
   Stream<QuerySnapshot> getUserPostsStream(String userId) {
-    return _db.collection('posts').where('userId', isEqualTo: userId).orderBy('timestamp', descending: true).snapshots();
+    return _db
+        .collection('posts')
+        .where('userId', isEqualTo: userId)
+        .orderBy('timestamp', descending: true)
+        .snapshots();
   }
 
   /// Gets a single snapshot of a post document.
@@ -263,7 +364,11 @@ class FirestoreService {
 
   /// Gets a real-time stream of a post's comments.
   Stream<QuerySnapshot> getPostCommentsStream(String postId, {int? limit}) {
-    Query query = _db.collection('posts').doc(postId).collection('comments').orderBy('timestamp', descending: true);
+    Query query = _db
+        .collection('posts')
+        .doc(postId)
+        .collection('comments')
+        .orderBy('timestamp', descending: true);
     if (limit != null) {
       query = query.limit(limit);
     }
@@ -272,8 +377,10 @@ class FirestoreService {
 
   /// Fetches the like and comment count for a post.
   Future<Map<String, int>> getPostStats(String postId) async {
-    final likesSnapshot = await _db.collection('posts').doc(postId).collection('likes').get();
-    final commentsSnapshot = await _db.collection('posts').doc(postId).collection('comments').get();
+    final likesSnapshot =
+    await _db.collection('posts').doc(postId).collection('likes').get();
+    final commentsSnapshot =
+    await _db.collection('posts').doc(postId).collection('comments').get();
     return {'likes': likesSnapshot.size, 'comments': commentsSnapshot.size};
   }
 
@@ -305,23 +412,42 @@ class FirestoreService {
 
   /// Gets a real-time stream of all notifications for a user.
   Stream<QuerySnapshot> getNotificationsStream(String userId) {
-    return _db.collection('users').doc(userId).collection('notifications').orderBy('timestamp', descending: true).limit(50).snapshots();
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('notifications')
+        .orderBy('timestamp', descending: true)
+        .limit(50)
+        .snapshots();
   }
 
   /// Gets a real-time stream of the unread notification count.
   Stream<int> getUnreadNotificationCountStream(String userId) {
-    return _db.collection('users').doc(userId).collection('notifications').where('read', isEqualTo: false).snapshots().map((snapshot) => snapshot.docs.length);
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('notifications')
+        .where('read', isEqualTo: false)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.length);
   }
 
   /// Marks a single notification as read.
   Future<void> markNotificationAsRead(String userId, String notificationId) {
-    return _db.collection('users').doc(userId).collection('notifications').doc(notificationId).update({'read': true});
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('notifications')
+        .doc(notificationId)
+        .update({'read': true});
   }
 
   /// Marks all of a user's unread notifications as read.
   Future<bool> markAllNotificationsAsRead(String userId) async {
-    final notificationsRef = _db.collection('users').doc(userId).collection('notifications');
-    final unreadNotifications = await notificationsRef.where('read', isEqualTo: false).get();
+    final notificationsRef =
+    _db.collection('users').doc(userId).collection('notifications');
+    final unreadNotifications =
+    await notificationsRef.where('read', isEqualTo: false).get();
     if (unreadNotifications.docs.isEmpty) return false;
 
     final batch = _db.batch();
@@ -335,7 +461,8 @@ class FirestoreService {
   // --- Chat Methods ---
 
   /// Creates a new chat or navigates to an existing one.
-  Future<void> startChat(BuildContext context, String otherUserId, String otherUsername) async {
+  Future<void> startChat(
+      BuildContext context, String otherUserId, String otherUsername) async {
     final navigator = Navigator.of(context, rootNavigator: true);
     final currentUser = FirebaseAuth.instance.currentUser!;
     final ids = [currentUser.uid, otherUserId];
@@ -353,12 +480,18 @@ class FirestoreService {
 
     // Pop the current modal/dialog before pushing the new screen
     Navigator.of(context).pop();
-    navigator.push(MaterialPageRoute(builder: (_) => ChatScreen(chatId: chatId, otherUsername: otherUsername)));
+    navigator.push(MaterialPageRoute(
+        builder: (_) =>
+            ChatScreen(chatId: chatId, otherUsername: otherUsername)));
   }
 
   /// Gets a real-time stream of a user's chats, ordered by the most recent message.
   Stream<QuerySnapshot> getChatsStream(String userId) {
-    return _db.collection('chats').where('users', arrayContains: userId).orderBy('lastMessageTimestamp', descending: true).snapshots();
+    return _db
+        .collection('chats')
+        .where('users', arrayContains: userId)
+        .orderBy('lastMessageTimestamp', descending: true)
+        .snapshots();
   }
 
   /// Gets a real-time stream of a single chat document.
@@ -368,16 +501,25 @@ class FirestoreService {
 
   /// Gets a real-time stream of the total unread chat count for a user.
   Stream<int> getUnreadChatCountStream(String userId) {
-    return _db.collection('chats').where('users', arrayContains: userId).where('unreadCount.$userId', isGreaterThan: 0).snapshots().map((snapshot) => snapshot.docs.length);
+    return _db
+        .collection('chats')
+        .where('users', arrayContains: userId)
+        .where('unreadCount.$userId', isGreaterThan: 0)
+        .snapshots()
+        .map((snapshot) => snapshot.docs.length);
   }
 
   /// Resets the unread message count for the current user in a specific chat.
   Future<void> resetUnreadCount(String chatId, String userId) {
-    return _db.collection('chats').doc(chatId).set({'unreadCount': {userId: 0}}, SetOptions(merge: true));
+    return _db
+        .collection('chats')
+        .doc(chatId)
+        .set({'unreadCount': {userId: 0}}, SetOptions(merge: true));
   }
 
   /// Updates the typing status for a user in a chat.
-  Future<void> updateTypingStatus(String chatId, String userId, bool isTyping) {
+  Future<void> updateTypingStatus(
+      String chatId, String userId, bool isTyping) {
     return _db.collection('chats').doc(chatId).update({'typingStatus.$userId': isTyping});
   }
 
@@ -408,7 +550,8 @@ class FirestoreService {
     });
 
     final chatDoc = await chatRef.get();
-    final List<dynamic> users = (chatDoc.data() as Map<String, dynamic>)['users'];
+    final List<dynamic> users =
+    (chatDoc.data() as Map<String, dynamic>)['users'];
     final otherUserId = users.firstWhere((id) => id != senderId);
 
     // TODO: Implement logic to send a push notification to the other user's FCM token.
@@ -424,7 +567,8 @@ class FirestoreService {
 
   /// Edits an existing message.
   Future<void> editMessage(String chatId, String messageId, String newText) {
-    final messageRef = _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
+    final messageRef =
+    _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
     return messageRef.update({
       'text': newText,
       'edited': true,
@@ -432,10 +576,14 @@ class FirestoreService {
     });
   }
 
-
   /// Deletes a message from a chat.
   Future<void> deleteMessage(String chatId, String messageId) {
-    return _db.collection('chats').doc(chatId).collection('messages').doc(messageId).delete();
+    return _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .doc(messageId)
+        .delete();
   }
 
   /// Deletes an entire chat conversation and all its messages.
@@ -451,11 +599,13 @@ class FirestoreService {
   }
 
   /// Marks messages in a chat as seen by the current user.
-  void markMessagesAsSeen(String chatId, String currentUserId, List<QueryDocumentSnapshot> messages) {
+  void markMessagesAsSeen(String chatId, String currentUserId,
+      List<QueryDocumentSnapshot> messages) {
     final batch = _db.batch();
     for (var message in messages) {
       final messageData = message.data() as Map<String, dynamic>;
-      if (messageData['senderId'] != currentUserId && (messageData['isSeen'] == null || messageData['isSeen'] == false)) {
+      if (messageData['senderId'] != currentUserId &&
+          (messageData['isSeen'] == null || messageData['isSeen'] == false)) {
         batch.update(message.reference, {'isSeen': true});
       }
     }
@@ -463,25 +613,36 @@ class FirestoreService {
   }
 
   /// **NEW:** Marks a list of messages as seen in a single batch write.
-  Future<void> markMultipleMessagesAsSeen(String chatId, List<String> messageIds) {
+  Future<void> markMultipleMessagesAsSeen(
+      String chatId, List<String> messageIds) {
     if (messageIds.isEmpty) return Future.value();
     final batch = _db.batch();
     for (final messageId in messageIds) {
-      final messageRef = _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
+      final messageRef = _db
+          .collection('chats')
+          .doc(chatId)
+          .collection('messages')
+          .doc(messageId);
       batch.update(messageRef, {'isSeen': true});
     }
     return batch.commit();
   }
 
-
   /// Gets a real-time stream of messages in a chat.
   Stream<QuerySnapshot> getMessagesStream(String chatId) {
-    return _db.collection('chats').doc(chatId).collection('messages').orderBy('timestamp', descending: true).snapshots();
+    return _db
+        .collection('chats')
+        .doc(chatId)
+        .collection('messages')
+        .orderBy('timestamp', descending: true)
+        .snapshots();
   }
 
   /// Adds or removes a reaction from a message.
-  Future<void> toggleMessageReaction(String chatId, String messageId, String userId, String emoji) async {
-    final messageRef = _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
+  Future<void> toggleMessageReaction(
+      String chatId, String messageId, String userId, String emoji) async {
+    final messageRef =
+    _db.collection('chats').doc(chatId).collection('messages').doc(messageId);
     final doc = await messageRef.get();
     final reactions = Map<String, String>.from(doc.data()?['reactions'] ?? {});
     if (reactions[userId] == emoji) {
@@ -495,10 +656,16 @@ class FirestoreService {
   // --- Match / Swipe Methods ---
 
   /// Fetches potential matches for the current user.
-  Future<List<DocumentSnapshot>> getPotentialMatches(String currentUserId) async {
+  Future<List<DocumentSnapshot>> getPotentialMatches(
+      String currentUserId) async {
     final userDoc = await getUser(currentUserId);
-    final currentUserCountry = (userDoc.data() as Map<String, dynamic>)['country'];
-    final swipesSnapshot = await _db.collection('users').doc(currentUserId).collection('swipes').get();
+    final currentUserCountry =
+    (userDoc.data() as Map<String, dynamic>)['country'];
+    final swipesSnapshot = await _db
+        .collection('users')
+        .doc(currentUserId)
+        .collection('swipes')
+        .get();
     final swipedUserIds = swipesSnapshot.docs.map((doc) => doc.id).toList();
 
     final querySnapshot = await _db
@@ -508,12 +675,20 @@ class FirestoreService {
         .limit(20)
         .get();
 
-    return querySnapshot.docs.where((doc) => doc.id != currentUserId && !swipedUserIds.contains(doc.id)).toList();
+    return querySnapshot.docs
+        .where((doc) => doc.id != currentUserId && !swipedUserIds.contains(doc.id))
+        .toList();
   }
 
   /// Records a user's swipe action ('smash' or 'pass').
-  Future<void> recordSwipe(String currentUserId, String otherUserId, String action) {
-    return _db.collection('users').doc(currentUserId).collection('swipes').doc(otherUserId).set({
+  Future<void> recordSwipe(
+      String currentUserId, String otherUserId, String action) {
+    return _db
+        .collection('users')
+        .doc(currentUserId)
+        .collection('swipes')
+        .doc(otherUserId)
+        .set({
       'action': action,
       'timestamp': FieldValue.serverTimestamp(),
     });
@@ -521,7 +696,12 @@ class FirestoreService {
 
   /// Checks if a 'smash' action resulted in a mutual match.
   Future<bool> checkForMatch(String currentUserId, String otherUserId) async {
-    final otherUserSwipe = await _db.collection('users').doc(otherUserId).collection('swipes').doc(currentUserId).get();
+    final otherUserSwipe = await _db
+        .collection('users')
+        .doc(otherUserId)
+        .collection('swipes')
+        .doc(currentUserId)
+        .get();
     return otherUserSwipe.exists && otherUserSwipe.data()?['action'] == 'smash';
   }
 

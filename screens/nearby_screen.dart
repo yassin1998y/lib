@@ -1,4 +1,6 @@
-import 'dart:async';
+// ---
+// lib/screens/nearby_screen.dart
+
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:freegram/main.dart'; // For BluetoothService and status service
@@ -7,6 +9,7 @@ import 'package:freegram/services/firestore_service.dart';
 import 'package:freegram/widgets/sonar_view.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
+import 'dart:async';
 
 class NearbyScreen extends StatefulWidget {
   const NearbyScreen({super.key});
@@ -16,16 +19,13 @@ class NearbyScreen extends StatefulWidget {
 }
 
 class _NearbyScreenState extends State<NearbyScreen> {
-  // Use the specific MobileBluetoothService to access scan controls
   late final MobileBluetoothService _bluetoothService;
   late final Box _contactsBox;
   StreamSubscription? _statusSubscription;
   NearbyStatus _currentStatus = NearbyStatus.idle;
   bool _isScanning = false;
 
-  // Store user profiles to avoid repeated lookups
   final Map<String, Map<String, dynamic>> _userProfileCache = {};
-  final Random _random = Random();
 
   @override
   void initState() {
@@ -33,7 +33,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
     final btService = BluetoothService();
     if (btService is MobileBluetoothService) {
       _bluetoothService = btService;
-      _bluetoothService.start(); // Initialize permissions and adapter state
+      _bluetoothService.start();
     }
 
     _contactsBox = Hive.box('nearby_contacts');
@@ -43,7 +43,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
       if (mounted) {
         setState(() => _currentStatus = status);
         if (status == NearbyStatus.userFound) {
-          _loadInitialProfiles(); // Refresh profiles when a new user is found
+          _loadInitialProfiles();
         }
       }
     });
@@ -51,7 +51,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
 
   @override
   void dispose() {
-    // Only stop the service if it was scanning
     if (_isScanning) {
       _bluetoothService.stopScanning();
     }
@@ -59,7 +58,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
     super.dispose();
   }
 
-  /// Toggles the Bluetooth scanning state.
   void _toggleScan(bool value) {
     setState(() {
       _isScanning = value;
@@ -71,7 +69,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
     }
   }
 
-  /// Pre-loads profiles for all contacts in the Hive box.
   Future<void> _loadInitialProfiles() async {
     for (var key in _contactsBox.keys) {
       if (!_userProfileCache.containsKey(key)) {
@@ -81,7 +78,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
     if (mounted) setState(() {});
   }
 
-  /// Fetches a user's profile and caches it.
   Future<void> _fetchUserProfile(String userId) async {
     final profileBox = Hive.box('user_profiles');
     if (profileBox.containsKey(userId)) {
@@ -100,7 +96,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
     }
   }
 
-  /// Provides a user-friendly message based on the current Bluetooth status.
   String _getStatusMessage(NearbyStatus status) {
     if (_isScanning) {
       if (status == NearbyStatus.scanning) return "Scanning for nearby users...";
@@ -121,7 +116,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
     }
   }
 
-  /// Deletes a user from the found list, allowing them to be rediscovered.
   void _deleteFoundUser(String userId) {
     _contactsBox.delete(userId);
     _userProfileCache.remove(userId);
@@ -139,17 +133,14 @@ class _NearbyScreenState extends State<NearbyScreen> {
       ),
       body: Column(
         children: [
-          // --- Sonar and Control Section ---
           _buildSonarSection(),
           const Divider(height: 1),
-          // --- Found Users Section ---
           _buildFoundUsersSection(),
         ],
       ),
     );
   }
 
-  /// Builds the top section with the sonar view and controls.
   Widget _buildSonarSection() {
     return Container(
       padding: const EdgeInsets.all(16.0),
@@ -184,20 +175,18 @@ class _NearbyScreenState extends State<NearbyScreen> {
     );
   }
 
-  /// Creates a list of positioned CircleAvatar widgets for the SonarView.
   List<Widget> _buildSonarAvatars() {
     final List<Widget> avatars = [];
-    final sonarRadius = 100.0; // The radius of the sonar view area
+    final sonarRadius = 100.0;
 
     _userProfileCache.forEach((userId, userData) {
       final photoUrl = userData['photoUrl'];
-      // Generate a stable random position based on the user ID
       final random = Random(userId.hashCode);
       final angle = random.nextDouble() * 2 * pi;
-      final distance = (random.nextDouble() * 0.6 + 0.2) * sonarRadius; // 20% to 80% of radius
+      final distance = (random.nextDouble() * 0.6 + 0.2) * sonarRadius;
 
       final position = Offset(
-        cos(angle) * distance + sonarRadius - 20, // Centering logic
+        cos(angle) * distance + sonarRadius - 20,
         sin(angle) * distance + sonarRadius - 20,
       );
 
@@ -216,7 +205,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
     return avatars;
   }
 
-  /// Builds the bottom section with the grid of found users.
   Widget _buildFoundUsersSection() {
     return Expanded(
       child: ValueListenableBuilder(
@@ -242,7 +230,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
               final userData = _userProfileCache[userId];
 
               if (userData == null) {
-                // Show a placeholder while the profile is being fetched
                 return const Card(child: Center(child: CircularProgressIndicator()));
               }
               return CompactNearbyUserCard(
@@ -258,7 +245,6 @@ class _NearbyScreenState extends State<NearbyScreen> {
   }
 }
 
-/// A compact card for displaying a found user in the grid.
 class CompactNearbyUserCard extends StatelessWidget {
   final Map<String, dynamic> userData;
   final VoidCallback onTap;
@@ -284,7 +270,7 @@ class CompactNearbyUserCard extends StatelessWidget {
         child: GridTile(
           footer: Container(
             padding: const EdgeInsets.symmetric(vertical: 2.0),
-            color: Colors.black.withOpacity(0.5),
+            color: Colors.black.withAlpha((255 * 0.5).round()),
             child: Text(
               username,
               textAlign: TextAlign.center,
@@ -299,7 +285,7 @@ class CompactNearbyUserCard extends StatelessWidget {
               child: Container(
                 margin: const EdgeInsets.all(4.0),
                 decoration: BoxDecoration(
-                  color: Colors.black.withOpacity(0.6),
+                  color: Colors.black.withAlpha((255 * 0.6).round()),
                   shape: BoxShape.circle,
                 ),
                 child: const Icon(Icons.close, color: Colors.white, size: 16),

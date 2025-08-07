@@ -1,4 +1,5 @@
-import 'package:animations/animations.dart';
+// lib/screens/main_screen.dart
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -16,7 +17,7 @@ import 'package:freegram/seed_database.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:freegram/widgets/post_card.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart'; // Added missing import
+import 'package:firebase_auth/firebase_auth.dart';
 
 class MainScreen extends StatefulWidget {
   const MainScreen({super.key});
@@ -39,13 +40,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _setupFcm(authState.user.uid);
       _updateUserPresence(authState.user.uid, true);
       _widgetOptions = <Widget>[
-        const FeedWidget(), // Assuming FeedWidget is defined elsewhere for now
+        const FeedWidget(),
         const DiscoverScreen(),
         const ChatListScreen(),
         ProfileScreen(userId: authState.user.uid),
       ];
     } else {
-      // Handle case where state is not Authenticated, though this screen shouldn't be reached.
       _widgetOptions = const [Center(child: Text("Error: Not Authenticated"))];
     }
   }
@@ -70,7 +70,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Updates user presence using the FirestoreService.
   Future<void> _updateUserPresence(String uid, bool isOnline) async {
     try {
       if (mounted) {
@@ -81,15 +80,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
   }
 
-  /// Sets up Firebase Cloud Messaging (FCM) for push notifications.
   Future<void> _setupFcm(String uid) async {
     final fcm = FirebaseMessaging.instance;
     await fcm.requestPermission();
     final token = await fcm.getToken();
-    if (token != null) {
-      if (mounted) {
-        await context.read<FirestoreService>().updateUser(uid, {'fcmToken': token});
-      }
+    if (token != null && mounted) {
+      await context.read<FirestoreService>().updateUser(uid, {'fcmToken': token});
     }
     fcm.onTokenRefresh.listen((newToken) async {
       if (mounted) {
@@ -105,7 +101,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _pageController.jumpToPage(index);
   }
 
-  /// Shows a bottom sheet for the user to choose between camera and gallery.
   Future<ImageSource?> _showImageSourceActionSheet(BuildContext context) async {
     return await showModalBottomSheet<ImageSource>(
       context: context,
@@ -129,7 +124,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     );
   }
 
-  /// Returns the configuration for the FloatingActionButton based on the selected tab.
   Map<String, dynamic> _getFabConfig(int index) {
     switch (index) {
       case 0: // Feed
@@ -228,7 +222,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             onSelected: (value) async {
               if (value == 'logout' && authState is Authenticated) {
                 await _updateUserPresence(authState.user.uid, false);
-                context.read<AuthBloc>().add(SignOut());
+                if (mounted) {
+                  context.read<AuthBloc>().add(SignOut());
+                }
               }
             },
             itemBuilder: (BuildContext context) => [const PopupMenuItem<String>(value: 'logout', child: Text('Logout'))],
@@ -274,7 +270,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 }
 
-// Placeholder for the FeedWidget. This should be moved to its own file.
+// Placeholder for the FeedWidget.
 class FeedWidget extends StatefulWidget {
   const FeedWidget({super.key});
 
@@ -338,7 +334,7 @@ class _FeedWidgetState extends State<FeedWidget> {
       final userDoc = await firestoreService.getUser(currentUser.uid);
       final userData = userDoc.data() as Map<String, dynamic>;
       final List<String> followingIds = List<String>.from(userData['following'] ?? []);
-      followingIds.add(currentUser.uid); // Add current user to see their own posts
+      followingIds.add(currentUser.uid);
 
       final QuerySnapshot querySnapshot = await firestoreService.getFeedPosts(
         followingIds,
@@ -376,21 +372,17 @@ class _FeedWidgetState extends State<FeedWidget> {
     }
 
     if (_posts.isEmpty) {
-      return Center(
-        child: RefreshIndicator(
-          onRefresh: () => _fetchFeedPosts(isRefresh: true),
-          child: const SingleChildScrollView(
-            physics: AlwaysScrollableScrollPhysics(),
-            child: SizedBox(
-              height: 300,
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text('No posts to show. Start following people!'),
-                ],
+      return RefreshIndicator(
+        onRefresh: () => _fetchFeedPosts(isRefresh: true),
+        child: const CustomScrollView(
+          physics: AlwaysScrollableScrollPhysics(),
+          slivers: [
+            SliverFillRemaining(
+              child: Center(
+                child: Text('No posts to show. Start following people!'),
               ),
             ),
-          ),
+          ],
         ),
       );
     }
@@ -402,11 +394,9 @@ class _FeedWidgetState extends State<FeedWidget> {
         itemCount: _posts.length + (_hasMore ? 1 : 0),
         itemBuilder: (context, index) {
           if (index == _posts.length) {
-            if (_isFetchingMore) {
-              return const Center(child: CircularProgressIndicator());
-            } else {
-              return const SizedBox();
-            }
+            return _isFetchingMore
+                ? const Center(child: CircularProgressIndicator())
+                : const SizedBox();
           }
           return PostCard(post: _posts[index]);
         },
@@ -414,3 +404,4 @@ class _FeedWidgetState extends State<FeedWidget> {
     );
   }
 }
+

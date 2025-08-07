@@ -22,3 +22,12 @@ class Authenticated extends AuthState {
 
 /// The state when no user is authenticated.
 class Unauthenticated extends AuthState {}
+
+/// The state when an authentication error occurs. (NEW)
+class AuthError extends AuthState {
+  final String message;
+  const AuthError(this.message);
+
+  @override
+  List<Object?> get props => [message];
+}

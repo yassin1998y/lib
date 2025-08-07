@@ -13,3 +13,9 @@ class CheckAuthentication extends AuthEvent {}
 
 /// Event to sign the user out.
 class SignOut extends AuthEvent {}
+
+/// Event to initiate sign-in with Google. (NEW)
+class SignInWithGoogle extends AuthEvent {}
+
+/// Event to initiate sign-in with Facebook. (NEW)
+class SignInWithFacebook extends AuthEvent {}

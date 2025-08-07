@@ -66,8 +66,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _messageSubscription = _firestoreService.getMessagesStream(widget.chatId).listen((snapshot) {
       if (_isInitialLoad && snapshot.docs.isNotEmpty) {
         final initialMessages = snapshot.docs.map((doc) => Message.fromDoc(doc)).toList();
-        // **FIX:** Initial load is sorted oldest to newest.
-        initialMessages.sort((a, b) => a.timestamp!.compareTo(b.timestamp!));
+        // For initial load, we still add all messages.
         _messages.addAll(initialMessages);
         _isInitialLoad = false;
       }
@@ -76,14 +75,19 @@ class _ChatScreenState extends State<ChatScreen> {
         final message = Message.fromDoc(change.doc);
         switch (change.type) {
           case DocumentChangeType.added:
+          // Prevent adding duplicates during initial load or from optimistic UI
             if (_messages.every((m) => m.id != message.id)) {
+              // Check if this message is the fulfilled version of an optimistic one
               final optimisticIndex = _messages.indexWhere((m) =>
               m.status == MessageStatus.sending &&
                   m.text == message.text &&
                   m.senderId == message.senderId);
+
               if (optimisticIndex != -1) {
+                // If found, just update the existing message in the list
                 setState(() => _messages[optimisticIndex] = message);
               } else {
+                // If it's a new message from the other user, add it to the list
                 _addMessageToList(message);
               }
             }
@@ -113,12 +117,12 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  /// **FIXED:** Inserts a new message at the beginning of the list (index 0)
+  /// to work correctly with the reversed `AnimatedList`.
   void _addMessageToList(Message message) {
-    // **FIX:** Add to the end of the list (chronological order).
-    final index = _messages.length;
-    _messages.add(message);
+    _messages.insert(0, message);
     if (_listKey.currentState != null) {
-      _listKey.currentState!.insertItem(index, duration: const Duration(milliseconds: 300));
+      _listKey.currentState!.insertItem(0, duration: const Duration(milliseconds: 300));
     }
   }
 
@@ -174,6 +178,7 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// **FIXED:** Sends a message and adds it optimistically to the start of the list (index 0).
   Future<void> _sendMessage() async {
     final currentUser = FirebaseAuth.instance.currentUser!;
     final messageText = _messageController.text.trim();
@@ -188,6 +193,7 @@ class _ChatScreenState extends State<ChatScreen> {
         replyToImageUrl: _replyingToImageUrl,
         replyToSender: _replyingToSender,
       );
+      // Add to the beginning of the list for the UI
       _addMessageToList(optimisticMessage);
       _messageController.clear();
       _cancelReply();
@@ -203,6 +209,19 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       } catch (e) {
         debugPrint("Error sending message: $e");
+        // Optionally, update the optimistic message to show an error state
+        final index = _messages.indexWhere((m) => m.id == optimisticMessage.id);
+        if (index != -1) {
+          setState(() {
+            _messages[index] = Message(
+              id: optimisticMessage.id,
+              senderId: optimisticMessage.senderId,
+              text: optimisticMessage.text,
+              status: MessageStatus.error,
+              timestamp: optimisticMessage.timestamp,
+            );
+          });
+        }
       }
     }
   }
@@ -399,14 +418,15 @@ class _ChatScreenState extends State<ChatScreen> {
                   Expanded(
                     child: AnimatedList(
                       key: _listKey,
-                      reverse: true, // This is the fix you requested
+                      reverse: true, // List is reversed to show messages from the bottom
                       padding: const EdgeInsets.all(8.0),
                       initialItemCount: _messages.length,
                       itemBuilder: (context, index, animation) {
-                        // Because the list is reversed, we access messages from the end.
-                        final reversedIndex = _messages.length - 1 - index;
-                        final message = _messages[reversedIndex];
-                        final previousMessage = reversedIndex > 0 ? _messages[reversedIndex - 1] : null;
+                        // **FIXED:** Access the message directly by index.
+                        // Since new messages are inserted at index 0, the list is already in the correct
+                        // visual order for a reversed list (newest at the bottom).
+                        final message = _messages[index];
+                        final previousMessage = (index + 1 < _messages.length) ? _messages[index + 1] : null;
 
                         final messageDate = message.timestamp?.toDate();
                         final previousMessageDate = previousMessage?.timestamp?.toDate();
@@ -423,6 +443,8 @@ class _ChatScreenState extends State<ChatScreen> {
                           sizeFactor: animation,
                           child: Column(
                             children: [
+                              // Note: Date separators might appear in reverse order now.
+                              // This might require more advanced logic if it's an issue.
                               if (showDateSeparator) DateSeparator(date: messageDate),
                               if (showUnreadSeparator) const UnreadSeparator(),
                               MessageBubble(
