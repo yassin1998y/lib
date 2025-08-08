@@ -41,14 +41,14 @@ class MobileBluetoothService extends BluetoothService {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // FIX: Initialize Facebook SDK for Web before running the app.
+  // Initialize Facebook SDK for Web.
   if (kIsWeb) {
-    // This call ensures FB.init() is called before any other FB methods.
     await FacebookAuth.instance.webAndDesktopInitialize(
-      appId: "703196319414511", // IMPORTANT: Replace with your actual App ID
+      appId: "703196319414511", // Your App ID
       cookie: true,
       xfbml: true,
-      version: "v15.0",
+      // FIX: Updated to a recent, valid API version.
+      version: "v20.0",
     );
   }
 
