@@ -1,15 +1,20 @@
-import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 
-/// A widget that displays a sonar-style radar animation.
 class SonarView extends StatefulWidget {
   final bool isScanning;
   final List<Widget> foundUserAvatars;
+  final Widget centerAvatar;
+  final AnimationController unleashController;
+  // **NEW**: A controller for the "user found" ripple effect.
+  final AnimationController discoveryController;
 
   const SonarView({
     super.key,
     required this.isScanning,
+    required this.centerAvatar,
+    required this.unleashController,
+    required this.discoveryController,
     this.foundUserAvatars = const [],
   });
 
@@ -19,16 +24,35 @@ class SonarView extends StatefulWidget {
 
 class _SonarViewState extends State<SonarView> with TickerProviderStateMixin {
   late AnimationController _sonarController;
+  late Animation<double> _sonarAnimation;
+  late Animation<double> _unleashAnimation;
+  // **NEW**: Animation for the discovery ripple.
+  late Animation<double> _discoveryAnimation;
 
   @override
   void initState() {
     super.initState();
     _sonarController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 2),
+      duration: const Duration(seconds: 3),
     );
 
-    // Start the animation only if scanning is active
+    _sonarAnimation = CurvedAnimation(
+      parent: _sonarController,
+      curve: Curves.easeOut,
+    );
+
+    _unleashAnimation = CurvedAnimation(
+      parent: widget.unleashController,
+      curve: Curves.fastOutSlowIn,
+    );
+
+    // **NEW**: Set up the discovery animation.
+    _discoveryAnimation = CurvedAnimation(
+      parent: widget.discoveryController,
+      curve: Curves.easeInOut,
+    );
+
     if (widget.isScanning) {
       _sonarController.repeat();
     }
@@ -37,7 +61,6 @@ class _SonarViewState extends State<SonarView> with TickerProviderStateMixin {
   @override
   void didUpdateWidget(SonarView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    // Control the animation based on the scanning state
     if (widget.isScanning && !_sonarController.isAnimating) {
       _sonarController.repeat();
     } else if (!widget.isScanning && _sonarController.isAnimating) {
@@ -56,22 +79,15 @@ class _SonarViewState extends State<SonarView> with TickerProviderStateMixin {
     return AspectRatio(
       aspectRatio: 1.0,
       child: CustomPaint(
-        painter: SonarPainter(animation: _sonarController),
+        painter: SonarPainter(
+          sonarAnimation: _sonarAnimation,
+          unleashAnimation: _unleashAnimation,
+          // **NEW**: Pass the discovery animation to the painter.
+          discoveryAnimation: _discoveryAnimation,
+        ),
         child: Stack(
           children: [
-            // Center icon representing the current user
-            Center(
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.blue.withOpacity(0.5),
-                ),
-                child: const Icon(Icons.person, color: Colors.white),
-              ),
-            ),
-            // Spread the found user avatars around the sonar
+            Center(child: widget.centerAvatar),
             ...widget.foundUserAvatars,
           ],
         ),
@@ -80,40 +96,55 @@ class _SonarViewState extends State<SonarView> with TickerProviderStateMixin {
   }
 }
 
-/// A custom painter that draws the sonar rings and pulsing wave.
 class SonarPainter extends CustomPainter {
-  final Animation<double> animation;
+  final Animation<double> sonarAnimation;
+  final Animation<double> unleashAnimation;
+  // **NEW**: The discovery animation is now a parameter.
+  final Animation<double> discoveryAnimation;
   final Paint _sonarPaint;
 
-  SonarPainter({required this.animation})
-      : _sonarPaint = Paint()
+  SonarPainter({
+    required this.sonarAnimation,
+    required this.unleashAnimation,
+    required this.discoveryAnimation,
+  })  : _sonarPaint = Paint()
     ..color = Colors.blue.withOpacity(0.5)
     ..style = PaintingStyle.stroke,
-        super(repaint: animation);
+        super(repaint: Listenable.merge([sonarAnimation, unleashAnimation, discoveryAnimation]));
 
   @override
   void paint(Canvas canvas, Size size) {
     final center = Offset(size.width / 2, size.height / 2);
     final maxRadius = min(size.width, size.height) / 2;
 
-    // Draw the concentric circles
     for (int i = 1; i <= 3; i++) {
       _sonarPaint.strokeWidth = 1.0;
       _sonarPaint.color = Colors.blue.withOpacity(0.3);
       canvas.drawCircle(center, maxRadius * (i / 3), _sonarPaint);
     }
 
-    // Draw the animated pulsing wave
-    if (animation.value > 0) {
-      _sonarPaint.strokeWidth = 2.0;
-      // The wave fades out as it expands
-      _sonarPaint.color = Colors.blue.withOpacity(1.0 - animation.value);
-      canvas.drawCircle(center, maxRadius * animation.value, _sonarPaint);
+    if (sonarAnimation.value > 0) {
+      _sonarPaint.strokeWidth = 2.5;
+      _sonarPaint.color = Colors.blue.withOpacity(1.0 - sonarAnimation.value);
+      canvas.drawCircle(center, maxRadius * sonarAnimation.value, _sonarPaint);
+    }
+
+    if (unleashAnimation.value > 0) {
+      _sonarPaint.strokeWidth = 4.0;
+      _sonarPaint.color = Colors.lightBlueAccent.withOpacity(1.0 - unleashAnimation.value);
+      canvas.drawCircle(center, maxRadius * unleashAnimation.value, _sonarPaint);
+    }
+
+    // **NEW**: Draw the bright discovery ripple when it's active.
+    if (discoveryAnimation.value > 0) {
+      _sonarPaint.strokeWidth = 5.0; // Make it the most prominent wave
+      _sonarPaint.color = Colors.tealAccent.withOpacity(1.0 - discoveryAnimation.value);
+      canvas.drawCircle(center, maxRadius * discoveryAnimation.value, _sonarPaint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
+  bool shouldRepaint(covariant SonarPainter oldDelegate) {
     return true;
   }
 }

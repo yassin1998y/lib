@@ -1,15 +1,17 @@
-// ---
-// lib/screens/nearby_screen.dart
-
 import 'dart:math';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:freegram/main.dart'; // For BluetoothService and status service
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:freegram/blocs/nearby_bloc.dart';
+import 'package:freegram/services/bluetooth_service.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
 import 'package:freegram/widgets/sonar_view.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
-import 'dart:async';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:app_settings/app_settings.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 class NearbyScreen extends StatefulWidget {
   const NearbyScreen({super.key});
@@ -18,108 +20,162 @@ class NearbyScreen extends StatefulWidget {
   State<NearbyScreen> createState() => _NearbyScreenState();
 }
 
-class _NearbyScreenState extends State<NearbyScreen> {
-  late final MobileBluetoothService _bluetoothService;
-  late final Box _contactsBox;
-  StreamSubscription? _statusSubscription;
-  NearbyStatus _currentStatus = NearbyStatus.idle;
-  bool _isScanning = false;
-
+class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
   final Map<String, Map<String, dynamic>> _userProfileCache = {};
+  List<String> _lastKnownUserIds = [];
+
+  bool _isBluetoothReady = false;
+  bool _isLocationReady = false;
+
+  late AnimationController _unleashController;
+  // **NEW**: Animation controller for the discovery ripple.
+  late AnimationController _discoveryController;
+  String? _currentUserPhotoUrl;
 
   @override
   void initState() {
     super.initState();
-    final btService = BluetoothService();
-    if (btService is MobileBluetoothService) {
-      _bluetoothService = btService;
-      _bluetoothService.start();
-    }
-
-    _contactsBox = Hive.box('nearby_contacts');
+    WidgetsBinding.instance.addObserver(this);
+    _unleashController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    // **NEW**: Initialize the discovery controller.
+    _discoveryController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
     _loadInitialProfiles();
-
-    _statusSubscription = bluetoothStatusService.statusStream.listen((status) {
-      if (mounted) {
-        setState(() => _currentStatus = status);
-        if (status == NearbyStatus.userFound) {
-          _loadInitialProfiles();
-        }
-      }
-    });
+    _fetchCurrentUserPhoto();
+    _syncPermissionsAndHardwareState();
   }
 
   @override
   void dispose() {
-    if (_isScanning) {
-      _bluetoothService.stopScanning();
-    }
-    _statusSubscription?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _unleashController.dispose();
+    _discoveryController.dispose(); // **NEW**: Dispose the new controller.
     super.dispose();
   }
 
-  void _toggleScan(bool value) {
-    setState(() {
-      _isScanning = value;
-    });
-    if (_isScanning) {
-      _bluetoothService.startScanning();
-    } else {
-      _bluetoothService.stopScanning();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _syncPermissionsAndHardwareState();
     }
   }
 
-  Future<void> _loadInitialProfiles() async {
-    for (var key in _contactsBox.keys) {
-      if (!_userProfileCache.containsKey(key)) {
-        await _fetchUserProfile(key);
+  Future<void> _syncPermissionsAndHardwareState() async {
+    final bluetoothPermission = await Permission.bluetoothScan.status;
+    final isAdapterOn = FlutterBluePlus.adapterStateNow == BluetoothAdapterState.on;
+
+    final locationPermission = await Permission.location.status;
+    final isLocationServiceOn = await Permission.location.serviceStatus.isEnabled;
+
+    final bool isBtReady = bluetoothPermission.isGranted && isAdapterOn;
+    final bool isLocReady = locationPermission.isGranted && isLocationServiceOn;
+
+    if (mounted) {
+      setState(() {
+        _isBluetoothReady = isBtReady;
+        _isLocationReady = isLocReady;
+      });
+
+      if (context.read<NearbyBloc>().state is NearbyActive && (!isBtReady || !isLocReady)) {
+        context.read<NearbyBloc>().add(StopNearbyServices());
+      }
+    }
+  }
+
+  Future<void> _handleBluetoothToggle() async {
+    if (FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) {
+      await AppSettings.openAppSettings(type: AppSettingsType.bluetooth);
+      return;
+    }
+    Map<Permission, PermissionStatus> statuses = await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.bluetoothAdvertise,
+    ].request();
+    if (statuses.values.every((s) => s.isGranted) && mounted) {
+      setState(() => _isBluetoothReady = true);
+    }
+  }
+
+  Future<void> _handleLocationToggle() async {
+    final serviceStatus = await Permission.location.serviceStatus;
+    if (!serviceStatus.isEnabled) {
+      await AppSettings.openAppSettings(type: AppSettingsType.location);
+      return;
+    }
+    final permissionStatus = await Permission.location.request();
+    if (permissionStatus.isGranted && mounted) {
+      setState(() => _isLocationReady = true);
+    }
+  }
+
+  Future<void> _fetchCurrentUserPhoto() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      final userDoc = await context.read<FirestoreService>().getUser(user.uid);
+      if(userDoc.exists && mounted) {
+        final data = userDoc.data() as Map<String, dynamic>;
+        setState(() {
+          _currentUserPhotoUrl = data['photoUrl'];
+        });
+      }
+    }
+  }
+
+  Future<void> _fetchProfilesForIds(List<String> userIds) async {
+    final newIds = userIds.where((id) => !_userProfileCache.containsKey(id)).toList();
+    if (newIds.isEmpty) return;
+
+    for (var userId in newIds) {
+      final profileBox = Hive.box('user_profiles');
+      if (profileBox.containsKey(userId)) {
+        _userProfileCache[userId] = Map<String, dynamic>.from(profileBox.get(userId));
+      } else {
+        try {
+          final doc = await context.read<FirestoreService>().getUser(userId);
+          if (doc.exists) {
+            final data = doc.data() as Map<String, dynamic>;
+            profileBox.put(userId, data);
+            _userProfileCache[userId] = data;
+          }
+        } catch (e) {
+          debugPrint("Error fetching user profile for $userId: $e");
+        }
       }
     }
     if (mounted) setState(() {});
   }
 
-  Future<void> _fetchUserProfile(String userId) async {
-    final profileBox = Hive.box('user_profiles');
-    if (profileBox.containsKey(userId)) {
-      _userProfileCache[userId] = Map<String, dynamic>.from(profileBox.get(userId));
-      return;
-    }
-    try {
-      final doc = await context.read<FirestoreService>().getUser(userId);
-      if (doc.exists) {
-        final data = doc.data() as Map<String, dynamic>;
-        profileBox.put(userId, data);
-        _userProfileCache[userId] = data;
-      }
-    } catch (e) {
-      debugPrint("Error fetching user profile for $userId: $e");
-    }
+  void _loadInitialProfiles() {
+    final box = Hive.box('nearby_contacts');
+    _fetchProfilesForIds(box.keys.cast<String>().toList());
   }
 
-  String _getStatusMessage(NearbyStatus status) {
-    if (_isScanning) {
-      if (status == NearbyStatus.scanning) return "Scanning for nearby users...";
-      if (status == NearbyStatus.advertising) return "Broadcasting your signal...";
-      if (status == NearbyStatus.userFound) return "Found a new user!";
+  String _getStatusMessage(NearbyStatus status, bool isScanning) {
+    if (isScanning) {
+      switch (status) {
+        case NearbyStatus.scanning: return "Scanning for others...";
+        case NearbyStatus.advertising: return "Making you discoverable...";
+        case NearbyStatus.userFound: return "Found someone new!";
+        default: return "Scanning & Broadcasting...";
+      }
     }
-    switch (status) {
-      case NearbyStatus.idle:
-        return "Ready to scan.";
-      case NearbyStatus.permissionsDenied:
-        return "Permissions denied. Grant in settings.";
-      case NearbyStatus.adapterOff:
-        return "Please turn on Bluetooth.";
-      case NearbyStatus.error:
-        return "An error occurred. Try again.";
-      default:
-        return "Initializing...";
+    if (_isBluetoothReady && _isLocationReady) {
+      return "Ready! Tap your picture to begin.";
     }
+    return "Enable Bluetooth & Location to begin.";
   }
 
   void _deleteFoundUser(String userId) {
-    _contactsBox.delete(userId);
+    final box = Hive.box('nearby_contacts');
+    box.delete(userId);
     _userProfileCache.remove(userId);
-    if (mounted) setState(() {});
+    setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('User removed. They can be discovered again.')),
     );
@@ -131,48 +187,139 @@ class _NearbyScreenState extends State<NearbyScreen> {
       appBar: AppBar(
         title: const Text('Nearby'),
       ),
-      body: Column(
-        children: [
-          _buildSonarSection(),
-          const Divider(height: 1),
-          _buildFoundUsersSection(),
-        ],
+      body: BlocConsumer<NearbyBloc, NearbyState>(
+        listener: (context, state) {
+          if (state is NearbyActive) {
+            // **NEW**: Trigger the discovery ripple when a new user is found.
+            if (state.foundUserIds.length > _lastKnownUserIds.length) {
+              _fetchProfilesForIds(state.foundUserIds);
+              _discoveryController.forward(from: 0.0);
+            }
+            _lastKnownUserIds = state.foundUserIds;
+          }
+        },
+        builder: (context, state) {
+          bool isScanning = state is NearbyActive;
+          NearbyStatus currentStatus = (state is NearbyActive) ? state.status : NearbyStatus.idle;
+          List<String> foundUserIds = (state is NearbyActive) ? state.foundUserIds : [];
+
+          return Column(
+            children: [
+              _buildControlSection(context, isScanning, currentStatus),
+              const Divider(height: 1),
+              _buildFoundUsersSection(foundUserIds),
+            ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildSonarSection() {
+  Widget _buildControlSection(BuildContext context, bool isScanning, NearbyStatus status) {
+    bool canStartScan = _isBluetoothReady && _isLocationReady;
+
     return Container(
       padding: const EdgeInsets.all(16.0),
       child: Column(
         children: [
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text('Sonar Scan', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                  Text(_getStatusMessage(_currentStatus), style: const TextStyle(color: Colors.grey)),
-                ],
+              _buildToggleChip(
+                label: "Bluetooth",
+                icon: Icons.bluetooth,
+                isEnabled: _isBluetoothReady,
+                onChanged: _handleBluetoothToggle,
               ),
-              Switch(
-                value: _isScanning,
-                onChanged: _toggleScan,
+              _buildToggleChip(
+                label: "Location",
+                icon: Icons.location_on,
+                isEnabled: _isLocationReady,
+                onChanged: _handleLocationToggle,
               ),
             ],
           ),
           const SizedBox(height: 16),
+          Text(_getStatusMessage(status, isScanning), style: const TextStyle(color: Colors.grey, fontSize: 16)),
+          const SizedBox(height: 16),
+
           SizedBox(
             height: 200,
             child: SonarView(
-              isScanning: _isScanning,
+              isScanning: isScanning,
+              unleashController: _unleashController,
+              discoveryController: _discoveryController, // **NEW**: Pass the controller
+              centerAvatar: _buildCenterAvatar(canStartScan, isScanning),
               foundUserAvatars: _buildSonarAvatars(),
             ),
           ),
         ],
       ),
     );
+  }
+
+  Widget _buildToggleChip({
+    required String label,
+    required IconData icon,
+    required bool isEnabled,
+    required VoidCallback onChanged,
+  }) {
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 1.0, end: isEnabled ? 1.05 : 1.0),
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      builder: (context, scale, child) {
+        return Transform.scale(
+          scale: scale,
+          child: child,
+        );
+      },
+      child: FilterChip(
+        label: Text(label),
+        avatar: Icon(icon, color: isEnabled ? Colors.white : Colors.grey),
+        selected: isEnabled,
+        onSelected: isEnabled ? null : (_) => onChanged(),
+        backgroundColor: Colors.grey[200],
+        selectedColor: Colors.blue,
+        labelStyle: TextStyle(color: isEnabled ? Colors.white : Colors.black),
+        showCheckmark: false,
+      ),
+    );
+  }
+
+  Widget _buildCenterAvatar(bool canStartScan, bool isScanning) {
+    Widget avatar = GestureDetector(
+      onTap: () {
+        if (canStartScan && !isScanning) {
+          _unleashController.forward(from: 0.0);
+          context.read<NearbyBloc>().add(StartNearbyServices());
+        } else if (isScanning) {
+          context.read<NearbyBloc>().add(StopNearbyServices());
+        }
+      },
+      child: CircleAvatar(
+        radius: 30,
+        backgroundColor: Colors.grey[300],
+        backgroundImage: _currentUserPhotoUrl != null ? NetworkImage(_currentUserPhotoUrl!) : null,
+        child: _currentUserPhotoUrl == null ? const Icon(Icons.person, size: 30, color: Colors.white) : null,
+      ),
+    );
+
+    if (canStartScan && !isScanning) {
+      return TweenAnimationBuilder<double>(
+        tween: Tween<double>(begin: 1.0, end: 1.1),
+        duration: const Duration(milliseconds: 800),
+        curve: Curves.easeInOut,
+        builder: (context, scale, child) {
+          return Transform.scale(
+            scale: scale,
+            child: child,
+          );
+        },
+        child: avatar,
+      );
+    }
+    return avatar;
   }
 
   List<Widget> _buildSonarAvatars() {
@@ -190,54 +337,66 @@ class _NearbyScreenState extends State<NearbyScreen> {
         sin(angle) * distance + sonarRadius - 20,
       );
 
+      final avatarWidget = TweenAnimationBuilder<double>(
+        key: ValueKey(userId),
+        tween: Tween<double>(begin: 0.0, end: 1.0),
+        duration: const Duration(milliseconds: 500),
+        builder: (context, value, child) {
+          return Opacity(
+            opacity: value,
+            child: Transform.scale(
+              scale: value,
+              child: child,
+            ),
+          );
+        },
+        child: CircleAvatar(
+          radius: 20,
+          backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+          child: (photoUrl == null || photoUrl.isEmpty) ? const Icon(Icons.person) : null,
+        ),
+      );
+
       avatars.add(
         Positioned(
           left: position.dx,
           top: position.dy,
-          child: CircleAvatar(
-            radius: 20,
-            backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-            child: (photoUrl == null || photoUrl.isEmpty) ? const Icon(Icons.person) : null,
-          ),
+          child: avatarWidget,
         ),
       );
     });
     return avatars;
   }
 
-  Widget _buildFoundUsersSection() {
+  Widget _buildFoundUsersSection(List<String> userIds) {
+    if (userIds.isEmpty) {
+      return const Expanded(
+        child: Center(
+          child: Text("No users found yet. Turn on the sonar!", style: TextStyle(color: Colors.grey)),
+        ),
+      );
+    }
     return Expanded(
-      child: ValueListenableBuilder(
-        valueListenable: _contactsBox.listenable(),
-        builder: (context, Box box, _) {
-          final contacts = box.keys.toList();
-          if (contacts.isEmpty) {
-            return const Center(
-              child: Text("No users found yet.", style: TextStyle(color: Colors.grey)),
-            );
-          }
-          return GridView.builder(
-            padding: const EdgeInsets.all(8.0),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              crossAxisSpacing: 8,
-              mainAxisSpacing: 8,
-              childAspectRatio: 0.8,
-            ),
-            itemCount: contacts.length,
-            itemBuilder: (context, index) {
-              final userId = contacts[index];
-              final userData = _userProfileCache[userId];
+      child: GridView.builder(
+        padding: const EdgeInsets.all(8.0),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 4,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+          childAspectRatio: 0.8,
+        ),
+        itemCount: userIds.length,
+        itemBuilder: (context, index) {
+          final userId = userIds[index];
+          final userData = _userProfileCache[userId];
 
-              if (userData == null) {
-                return const Card(child: Center(child: CircularProgressIndicator()));
-              }
-              return CompactNearbyUserCard(
-                userData: userData,
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
-                onDelete: () => _deleteFoundUser(userId),
-              );
-            },
+          if (userData == null) {
+            return const Card(child: Center(child: CircularProgressIndicator()));
+          }
+          return CompactNearbyUserCard(
+            userData: userData,
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
+            onDelete: () => _deleteFoundUser(userId),
           );
         },
       ),
@@ -261,44 +420,78 @@ class CompactNearbyUserCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final photoUrl = userData['photoUrl'];
     final username = userData['username'] ?? 'User';
+    final isOnline = userData['presence'] ?? false;
 
     return GestureDetector(
       onTap: onTap,
       child: Card(
         clipBehavior: Clip.antiAlias,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        child: GridTile(
-          footer: Container(
-            padding: const EdgeInsets.symmetric(vertical: 2.0),
-            color: Colors.black.withAlpha((255 * 0.5).round()),
-            child: Text(
-              username,
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          header: Align(
-            alignment: Alignment.topRight,
-            child: GestureDetector(
-              onTap: onDelete,
-              child: Container(
-                margin: const EdgeInsets.all(4.0),
-                decoration: BoxDecoration(
-                  color: Colors.black.withAlpha((255 * 0.6).round()),
-                  shape: BoxShape.circle,
+        elevation: 3,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            (photoUrl != null && photoUrl.isNotEmpty)
+                ? Image.network(
+              photoUrl,
+              fit: BoxFit.cover,
+              errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
+            )
+                : const Icon(Icons.person, size: 40, color: Colors.grey),
+
+            Container(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [Colors.transparent, Colors.black.withOpacity(0.8)],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
                 ),
-                child: const Icon(Icons.close, color: Colors.white, size: 16),
               ),
             ),
-          ),
-          child: (photoUrl != null && photoUrl.isNotEmpty)
-              ? Image.network(
-            photoUrl,
-            fit: BoxFit.cover,
-            errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
-          )
-              : const Icon(Icons.person, size: 40, color: Colors.grey),
+
+            Positioned(
+              bottom: 5,
+              left: 5,
+              right: 5,
+              child: Text(
+                username,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+
+            Positioned(
+              top: 4,
+              right: 4,
+              child: GestureDetector(
+                onTap: onDelete,
+                child: Container(
+                  padding: const EdgeInsets.all(2),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withOpacity(0.6),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.close, color: Colors.white, size: 14),
+                ),
+              ),
+            ),
+
+            if (isOnline)
+              Positioned(
+                top: 4,
+                left: 4,
+                child: Container(
+                  height: 10,
+                  width: 10,
+                  decoration: BoxDecoration(
+                    color: Colors.greenAccent,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
