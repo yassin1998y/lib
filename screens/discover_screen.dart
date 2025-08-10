@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/screens/edit_profile_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
@@ -8,7 +11,6 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 
-// A predefined list of interests for the filter sheet.
 const List<String> _possibleInterests = [
   'Photography', 'Traveling', 'Hiking', 'Reading', 'Gaming', 'Cooking',
   'Movies', 'Music', 'Art', 'Sports', 'Yoga', 'Coding', 'Writing',
@@ -59,7 +61,6 @@ class _DiscoverScreenState extends State<DiscoverScreen> with SingleTickerProvid
   }
 }
 
-// --- Explore Tab ---
 class ExploreTab extends StatefulWidget {
   const ExploreTab({super.key});
   @override
@@ -68,15 +69,14 @@ class ExploreTab extends StatefulWidget {
 
 class _ExploreTabState extends State<ExploreTab> {
   final _scrollController = ScrollController();
-  List<DocumentSnapshot> _allUsers = [];
-  List<DocumentSnapshot> _filteredUsers = [];
+  List<DocumentSnapshot> _allUserDocs = []; // Keep original docs for pagination
+  List<UserModel> _filteredUsers = [];
   bool _isLoading = false;
   bool _isFetchingMore = false;
   bool _hasMore = true;
   DocumentSnapshot? _lastDocument;
-  final int _documentLimit = 25; // Increased limit for 5 columns
+  final int _documentLimit = 25;
 
-  // State for filters
   String _searchQuery = '';
   String? _selectedCountry;
   RangeValues _ageRange = const RangeValues(18, 80);
@@ -103,11 +103,10 @@ class _ExploreTabState extends State<ExploreTab> {
     super.dispose();
   }
 
-  /// Fetches a paginated list of users from the FirestoreService.
   Future<void> _getUsers({bool isRefresh = false}) async {
     if (_isFetchingMore || _showNearbyOnly) return;
     if (isRefresh) {
-      _allUsers = [];
+      _allUserDocs = [];
       _lastDocument = null;
       _hasMore = true;
     }
@@ -116,7 +115,7 @@ class _ExploreTabState extends State<ExploreTab> {
     if (!mounted) return;
     setState(() {
       _isFetchingMore = true;
-      if (_allUsers.isEmpty) _isLoading = true;
+      if (_allUserDocs.isEmpty) _isLoading = true;
     });
 
     try {
@@ -128,7 +127,7 @@ class _ExploreTabState extends State<ExploreTab> {
       if (querySnapshot.docs.length < _documentLimit) _hasMore = false;
       if (querySnapshot.docs.isNotEmpty) {
         _lastDocument = querySnapshot.docs.last;
-        _allUsers.addAll(querySnapshot.docs);
+        _allUserDocs.addAll(querySnapshot.docs);
       }
       _applyFilters();
     } catch (e) {
@@ -138,73 +137,58 @@ class _ExploreTabState extends State<ExploreTab> {
     if (mounted) setState(() { _isFetchingMore = false; _isLoading = false; });
   }
 
-  /// Fetches users found via Bluetooth from the local Hive cache.
   Future<void> _getNearbyUsers() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
     final nearbyBox = Hive.box('nearby_contacts');
     final profileBox = Hive.box('user_profiles');
-    List<DocumentSnapshot> nearbyUsers = [];
+    List<UserModel> nearbyUsers = [];
 
     for (var key in nearbyBox.keys) {
       final profileData = profileBox.get(key);
       if (profileData != null) {
-        // Use a map instead of a custom class to avoid the 'sealed class' warning.
-        nearbyUsers.add(MockDocumentSnapshot(key, Map<String, dynamic>.from(profileData)));
+        nearbyUsers.add(UserModel.fromMap(key, Map<String, dynamic>.from(profileData)));
       } else {
         try {
-          final doc = await context.read<FirestoreService>().getUser(key);
-          if (doc.exists) {
-            profileBox.put(key, doc.data());
-            nearbyUsers.add(doc);
-          }
+          final userModel = await context.read<FirestoreService>().getUser(key);
+          profileBox.put(key, userModel.toMap());
+          nearbyUsers.add(userModel);
         } catch (e) {
           debugPrint("Could not fetch nearby user profile: $e");
         }
       }
     }
 
-    _allUsers = nearbyUsers;
-    _applyFilters();
-    if (mounted) setState(() => _isLoading = false);
+    setState(() {
+      _filteredUsers = nearbyUsers;
+      _isLoading = false;
+    });
   }
 
-  /// Applies the current filter criteria to the list of users.
   void _applyFilters() {
-    List<DocumentSnapshot> tempFiltered = List.from(_allUsers);
+    final allUsers = _allUserDocs.map((doc) => UserModel.fromDoc(doc)).toList();
+    List<UserModel> tempFiltered = List.from(allUsers);
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
-    tempFiltered = tempFiltered.where((doc) {
-      final data = doc.data() as Map<String, dynamic>;
-      if (doc.id == currentUserId) return false;
-
-      final userAge = data['age'] as int? ?? 0;
-      final userGender = data['gender'] as String? ?? '';
-      final userCountry = data['country'] as String? ?? '';
-      final username = data['username'] as String? ?? '';
-      final userInterests = List<String>.from(data['interests'] ?? []);
-
-      if (_searchQuery.isNotEmpty && !username.toLowerCase().contains(_searchQuery.toLowerCase())) return false;
-      if (_selectedCountry != null && _selectedCountry != 'All' && userCountry != _selectedCountry) return false;
-      if (userAge < _ageRange.start || userAge > _ageRange.end) return false;
-      if (_genderFilter != 'All' && userGender != _genderFilter) return false;
-      if (_selectedInterests.isNotEmpty && !_selectedInterests.any((interest) => userInterests.contains(interest))) return false;
+    tempFiltered = tempFiltered.where((user) {
+      if (user.id == currentUserId) return false;
+      if (_searchQuery.isNotEmpty && !user.username.toLowerCase().contains(_searchQuery.toLowerCase())) return false;
+      if (_selectedCountry != null && _selectedCountry != 'All' && user.country != _selectedCountry) return false;
+      if (user.age < _ageRange.start || user.age > _ageRange.end) return false;
+      if (_genderFilter != 'All' && user.gender != _genderFilter) return false;
+      if (_selectedInterests.isNotEmpty && !_selectedInterests.any((interest) => user.interests.contains(interest))) return false;
       return true;
     }).toList();
 
-    // Sort by online status
     tempFiltered.sort((a, b) {
-      final aPresence = (a.data() as Map<String, dynamic>)['presence'] ?? false;
-      final bPresence = (b.data() as Map<String, dynamic>)['presence'] ?? false;
-      if (aPresence && !bPresence) return -1;
-      if (!aPresence && bPresence) return 1;
+      if (a.presence && !b.presence) return -1;
+      if (!a.presence && b.presence) return 1;
       return 0;
     });
 
     if (mounted) setState(() => _filteredUsers = tempFiltered);
   }
 
-  /// Reloads user data when filters are changed.
   void _onFilterChanged() {
     if (_showNearbyOnly) {
       _getNearbyUsers();
@@ -213,7 +197,6 @@ class _ExploreTabState extends State<ExploreTab> {
     }
   }
 
-  /// Shows the filter selection bottom sheet.
   void _showFilterSheet() {
     showModalBottomSheet(
       context: context,
@@ -323,7 +306,7 @@ class _ExploreTabState extends State<ExploreTab> {
               itemBuilder: (context, index) {
                 if (index == _filteredUsers.length) return const Center(child: CircularProgressIndicator());
                 final user = _filteredUsers[index];
-                return CompactUserCard(userDoc: user);
+                return CompactUserCard(user: user);
               },
             ),
           ),
@@ -333,7 +316,6 @@ class _ExploreTabState extends State<ExploreTab> {
   }
 }
 
-// --- For You Tab ---
 class ForYouTab extends StatefulWidget {
   const ForYouTab({super.key});
   @override
@@ -341,7 +323,7 @@ class ForYouTab extends StatefulWidget {
 }
 
 class _ForYouTabState extends State<ForYouTab> {
-  List<DocumentSnapshot>? _recommendedUsers;
+  List<UserModel>? _recommendedUsers;
   bool _isLoading = true;
 
   @override
@@ -350,28 +332,24 @@ class _ForYouTabState extends State<ForYouTab> {
     _fetchRecommendedUsers();
   }
 
-  /// Fetches a list of recommended users based on shared interests.
   Future<void> _fetchRecommendedUsers() async {
     if (!mounted) return;
     setState(() => _isLoading = true);
     final currentUser = FirebaseAuth.instance.currentUser!;
     try {
-      final userDoc = await context.read<FirestoreService>().getUser(currentUser.uid);
-      final userData = userDoc.data() as Map<String, dynamic>?;
-      final List<String> myInterests = List<String>.from(userData?['interests'] ?? []);
+      final user = await context.read<FirestoreService>().getUser(currentUser.uid);
+      final List<String> myInterests = user.interests;
 
       if (myInterests.isEmpty) {
         if (mounted) setState(() => _isLoading = false);
         return;
       }
       if (!mounted) return;
-      final users = await context.read<FirestoreService>().getRecommendedUsers(myInterests, currentUser.uid);
-      // Sort by number of shared interests
+      final userDocs = await context.read<FirestoreService>().getRecommendedUsers(myInterests, currentUser.uid);
+      final users = userDocs.map((doc) => UserModel.fromDoc(doc)).toList();
       users.sort((a, b) {
-        final aInterests = List<String>.from((a.data() as Map<String, dynamic>)['interests'] ?? []);
-        final bInterests = List<String>.from((b.data() as Map<String, dynamic>)['interests'] ?? []);
-        final aShared = aInterests.where((i) => myInterests.contains(i)).length;
-        final bShared = bInterests.where((i) => myInterests.contains(i)).length;
+        final aShared = a.interests.where((i) => myInterests.contains(i)).length;
+        final bShared = b.interests.where((i) => myInterests.contains(i)).length;
         return bShared.compareTo(aShared);
       });
 
@@ -400,10 +378,10 @@ class _ForYouTabState extends State<ForYouTab> {
               ElevatedButton(
                 onPressed: () async {
                   final currentUser = FirebaseAuth.instance.currentUser!;
-                  final userDoc = await context.read<FirestoreService>().getUser(currentUser.uid);
-                  if (userDoc.exists && mounted) {
+                  final user = await context.read<FirestoreService>().getUser(currentUser.uid);
+                  if (mounted) {
                     Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => EditProfileScreen(currentUserData: userDoc.data() as Map<String, dynamic>),
+                      builder: (_) => EditProfileScreen(currentUserData: user.toMap()),
                     ));
                   }
                 },
@@ -422,33 +400,26 @@ class _ForYouTabState extends State<ForYouTab> {
         itemCount: _recommendedUsers!.length,
         itemBuilder: (context, index) {
           final user = _recommendedUsers![index];
-          return CompactUserCard(userDoc: user);
+          return CompactUserCard(user: user);
         },
       ),
     );
   }
 }
 
-/// A compact card for displaying a user in a grid.
 class CompactUserCard extends StatelessWidget {
-  final DocumentSnapshot userDoc;
-  const CompactUserCard({super.key, required this.userDoc});
+  final UserModel user;
+  const CompactUserCard({super.key, required this.user});
 
   @override
   Widget build(BuildContext context) {
-    final userData = userDoc.data() as Map<String, dynamic>;
-    final userId = userDoc.id;
-    final photoUrl = userData['photoUrl'];
-    final username = userData['username'] ?? 'User';
-    final isOnline = userData['presence'] ?? false;
-
     return GestureDetector(
       onTap: () {
         showModalBottomSheet(
           context: context,
           shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
           isScrollControlled: true,
-          builder: (_) => UserInfoPopup(userId: userId),
+          builder: (_) => UserInfoPopup(userId: user.id),
         );
       },
       child: Card(
@@ -459,7 +430,7 @@ class CompactUserCard extends StatelessWidget {
             padding: const EdgeInsets.symmetric(vertical: 4.0),
             color: Colors.black.withOpacity(0.5),
             child: Text(
-              username,
+              user.username,
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.white, fontSize: 12),
               overflow: TextOverflow.ellipsis,
@@ -468,15 +439,15 @@ class CompactUserCard extends StatelessWidget {
           child: Stack(
             fit: StackFit.expand,
             children: [
-              if (photoUrl != null && photoUrl.isNotEmpty)
+              if (user.photoUrl.isNotEmpty)
                 Image.network(
-                  photoUrl,
+                  user.photoUrl,
                   fit: BoxFit.cover,
                   errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
                 )
               else
                 const Icon(Icons.person, size: 40, color: Colors.grey),
-              if (isOnline)
+              if (user.presence)
                 Positioned(
                   top: 4,
                   right: 4,
@@ -498,7 +469,6 @@ class CompactUserCard extends StatelessWidget {
   }
 }
 
-/// A skeleton loader for the user grids.
 class UserGridSkeleton extends StatelessWidget {
   final int crossAxisCount;
   const UserGridSkeleton({super.key, this.crossAxisCount = 3});
@@ -517,7 +487,6 @@ class UserGridSkeleton extends StatelessWidget {
   }
 }
 
-/// A popup that shows a summary of a user's profile.
 class UserInfoPopup extends StatelessWidget {
   final String userId;
   const UserInfoPopup({super.key, required this.userId});
@@ -528,18 +497,11 @@ class UserInfoPopup extends StatelessWidget {
       expand: false,
       initialChildSize: 0.6,
       maxChildSize: 0.9,
-      builder: (_, scrollController) => StreamBuilder<DocumentSnapshot>(
+      builder: (_, scrollController) => StreamBuilder<UserModel>(
         stream: context.read<FirestoreService>().getUserStream(userId),
         builder: (context, snapshot) {
           if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-          final userData = snapshot.data!.data() as Map<String, dynamic>;
-          final username = userData['username'] ?? 'User';
-          final photoUrl = userData['photoUrl'] ?? '';
-          final country = userData['country'] ?? 'Not specified';
-          final age = userData['age'] ?? 0;
-          final bio = userData['bio'] ?? 'No bio yet.';
-          final interests = List<String>.from(userData['interests'] ?? []);
-
+          final user = snapshot.data!;
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 20.0),
             decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
@@ -551,37 +513,52 @@ class UserInfoPopup extends StatelessWidget {
                 const SizedBox(height: 20),
                 CircleAvatar(
                   radius: 40,
-                  backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                  child: photoUrl.isEmpty ? Text(username.isNotEmpty ? username[0].toUpperCase() : '?', style: const TextStyle(fontSize: 40)) : null,
+                  backgroundImage: user.photoUrl.isNotEmpty ? NetworkImage(user.photoUrl) : null,
+                  child: user.photoUrl.isEmpty ? Text(user.username.isNotEmpty ? user.username[0].toUpperCase() : '?', style: const TextStyle(fontSize: 40)) : null,
                 ),
                 const SizedBox(height: 12),
-                Text('$username, $age', textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                Text(country, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, color: Colors.grey)),
+                Text('${user.username}, ${user.age}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                Text(user.country, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, color: Colors.grey)),
                 const SizedBox(height: 16),
-                Text(bio, textAlign: TextAlign.center, style: const TextStyle(fontSize: 15)),
+                Text(user.bio, textAlign: TextAlign.center, style: const TextStyle(fontSize: 15)),
                 const SizedBox(height: 16),
-                if (interests.isNotEmpty)
+                if (user.interests.isNotEmpty)
                   Wrap(
                     spacing: 8.0, runSpacing: 4.0, alignment: WrapAlignment.center,
-                    children: interests.map((interest) => Chip(label: Text(interest), backgroundColor: Colors.blue.withOpacity(0.1), labelStyle: const TextStyle(color: Colors.blue))).toList(),
+                    children: user.interests.map((interest) => Chip(label: Text(interest), backgroundColor: Colors.blue.withOpacity(0.1), labelStyle: const TextStyle(color: Colors.blue))).toList(),
                   ),
                 const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () { Navigator.pop(context); Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))); },
-                        child: const Text('View Profile'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: ElevatedButton(
-                        onPressed: () => context.read<FirestoreService>().startChat(context, userId, username),
-                        child: const Text('Message'),
-                      ),
-                    ),
-                  ],
+                BlocBuilder<FriendsBloc, FriendsState>(
+                  builder: (context, state) {
+                    if (state is FriendsLoaded) {
+                      final currentUser = state.user;
+                      final isFriend = currentUser.friends.contains(user.id);
+                      if (isFriend) {
+                        return Row(
+                          children: [
+                            Expanded(
+                              child: OutlinedButton(
+                                onPressed: () { Navigator.pop(context); Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))); },
+                                child: const Text('View Profile'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: () => context.read<FirestoreService>().startOrGetChat(context, userId, user.username),
+                                child: const Text('Message'),
+                              ),
+                            ),
+                          ],
+                        );
+                      }
+                    }
+                    // Default view for non-friends or loading state
+                    return ElevatedButton(
+                      onPressed: () => context.read<FirestoreService>().startOrGetChat(context, userId, user.username),
+                      child: const Text('Message'),
+                    );
+                  },
                 ),
                 const SizedBox(height: 20),
               ],
@@ -591,29 +568,4 @@ class UserInfoPopup extends StatelessWidget {
       ),
     );
   }
-}
-
-/// This is a temporary Mock DocumentSnapshot class to resolve a compile warning.
-/// The better long-term solution is to use a dedicated data model class for Hive.
-class MockDocumentSnapshot implements DocumentSnapshot {
-  final String _id;
-  final Map<String, dynamic> _data;
-  MockDocumentSnapshot(this._id, this._data);
-  @override
-  dynamic operator [](Object field) => _data[field];
-  @override
-  dynamic get(Object field) {
-    if (_data.containsKey(field)) return _data[field];
-    throw StateError('Field does not exist in mock snapshot');
-  }
-  @override
-  Map<String, dynamic> data() => _data;
-  @override
-  String get id => _id;
-  @override
-  bool get exists => true;
-  @override
-  SnapshotMetadata get metadata => throw UnimplementedError();
-  @override
-  DocumentReference<Object?> get reference => throw UnimplementedError();
 }

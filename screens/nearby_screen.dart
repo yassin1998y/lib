@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/nearby_bloc.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/services/bluetooth_service.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
@@ -21,14 +22,13 @@ class NearbyScreen extends StatefulWidget {
 }
 
 class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
-  final Map<String, Map<String, dynamic>> _userProfileCache = {};
+  final Map<String, UserModel> _userProfileCache = {};
   List<String> _lastKnownUserIds = [];
 
   bool _isBluetoothReady = false;
   bool _isLocationReady = false;
 
   late AnimationController _unleashController;
-  // **NEW**: Animation controller for the discovery ripple.
   late AnimationController _discoveryController;
   String? _currentUserPhotoUrl;
 
@@ -40,7 +40,6 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
       vsync: this,
       duration: const Duration(milliseconds: 800),
     );
-    // **NEW**: Initialize the discovery controller.
     _discoveryController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -54,7 +53,7 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _unleashController.dispose();
-    _discoveryController.dispose(); // **NEW**: Dispose the new controller.
+    _discoveryController.dispose();
     super.dispose();
   }
 
@@ -117,11 +116,10 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
   Future<void> _fetchCurrentUserPhoto() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final userDoc = await context.read<FirestoreService>().getUser(user.uid);
-      if(userDoc.exists && mounted) {
-        final data = userDoc.data() as Map<String, dynamic>;
+      final userModel = await context.read<FirestoreService>().getUser(user.uid);
+      if(mounted) {
         setState(() {
-          _currentUserPhotoUrl = data['photoUrl'];
+          _currentUserPhotoUrl = userModel.photoUrl;
         });
       }
     }
@@ -134,15 +132,12 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
     for (var userId in newIds) {
       final profileBox = Hive.box('user_profiles');
       if (profileBox.containsKey(userId)) {
-        _userProfileCache[userId] = Map<String, dynamic>.from(profileBox.get(userId));
+        _userProfileCache[userId] = UserModel.fromMap(userId, Map<String, dynamic>.from(profileBox.get(userId)));
       } else {
         try {
-          final doc = await context.read<FirestoreService>().getUser(userId);
-          if (doc.exists) {
-            final data = doc.data() as Map<String, dynamic>;
-            profileBox.put(userId, data);
-            _userProfileCache[userId] = data;
-          }
+          final userModel = await context.read<FirestoreService>().getUser(userId);
+          profileBox.put(userId, userModel.toMap());
+          _userProfileCache[userId] = userModel;
         } catch (e) {
           debugPrint("Error fetching user profile for $userId: $e");
         }
@@ -190,7 +185,6 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
       body: BlocConsumer<NearbyBloc, NearbyState>(
         listener: (context, state) {
           if (state is NearbyActive) {
-            // **NEW**: Trigger the discovery ripple when a new user is found.
             if (state.foundUserIds.length > _lastKnownUserIds.length) {
               _fetchProfilesForIds(state.foundUserIds);
               _discoveryController.forward(from: 0.0);
@@ -248,7 +242,7 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
             child: SonarView(
               isScanning: isScanning,
               unleashController: _unleashController,
-              discoveryController: _discoveryController, // **NEW**: Pass the controller
+              discoveryController: _discoveryController,
               centerAvatar: _buildCenterAvatar(canStartScan, isScanning),
               foundUserAvatars: _buildSonarAvatars(),
             ),
@@ -326,8 +320,8 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
     final List<Widget> avatars = [];
     final sonarRadius = 100.0;
 
-    _userProfileCache.forEach((userId, userData) {
-      final photoUrl = userData['photoUrl'];
+    _userProfileCache.forEach((userId, user) {
+      final photoUrl = user.photoUrl;
       final random = Random(userId.hashCode);
       final angle = random.nextDouble() * 2 * pi;
       final distance = (random.nextDouble() * 0.6 + 0.2) * sonarRadius;
@@ -352,8 +346,8 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
         },
         child: CircleAvatar(
           radius: 20,
-          backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-          child: (photoUrl == null || photoUrl.isEmpty) ? const Icon(Icons.person) : null,
+          backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+          child: (photoUrl.isEmpty) ? const Icon(Icons.person) : null,
         ),
       );
 
@@ -388,13 +382,13 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
         itemCount: userIds.length,
         itemBuilder: (context, index) {
           final userId = userIds[index];
-          final userData = _userProfileCache[userId];
+          final user = _userProfileCache[userId];
 
-          if (userData == null) {
+          if (user == null) {
             return const Card(child: Center(child: CircularProgressIndicator()));
           }
           return CompactNearbyUserCard(
-            userData: userData,
+            user: user,
             onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
             onDelete: () => _deleteFoundUser(userId),
           );
@@ -405,23 +399,19 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
 }
 
 class CompactNearbyUserCard extends StatelessWidget {
-  final Map<String, dynamic> userData;
+  final UserModel user;
   final VoidCallback onTap;
   final VoidCallback onDelete;
 
   const CompactNearbyUserCard({
     super.key,
-    required this.userData,
+    required this.user,
     required this.onTap,
     required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
-    final photoUrl = userData['photoUrl'];
-    final username = userData['username'] ?? 'User';
-    final isOnline = userData['presence'] ?? false;
-
     return GestureDetector(
       onTap: onTap,
       child: Card(
@@ -431,9 +421,9 @@ class CompactNearbyUserCard extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            (photoUrl != null && photoUrl.isNotEmpty)
+            (user.photoUrl.isNotEmpty)
                 ? Image.network(
-              photoUrl,
+              user.photoUrl,
               fit: BoxFit.cover,
               errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
             )
@@ -454,7 +444,7 @@ class CompactNearbyUserCard extends StatelessWidget {
               left: 5,
               right: 5,
               child: Text(
-                username,
+                user.username,
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
                 overflow: TextOverflow.ellipsis,
@@ -477,7 +467,7 @@ class CompactNearbyUserCard extends StatelessWidget {
               ),
             ),
 
-            if (isOnline)
+            if (user.presence)
               Positioned(
                 top: 4,
                 left: 4,

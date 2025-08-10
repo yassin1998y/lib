@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 import 'package:freegram/blocs/auth_bloc.dart';
+import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/blocs/nearby_bloc.dart';
 import 'package:freegram/blocs/profile_bloc.dart';
 import 'package:freegram/firebase_options.dart';
@@ -59,11 +60,16 @@ class MyApp extends StatelessWidget {
               firestoreService: context.read<FirestoreService>(),
             ),
           ),
-          // **NEW**: Nearby BLoC
-          // This makes the NearbyBloc available throughout the app.
+          // Nearby BLoC
           BlocProvider<NearbyBloc>(
             create: (context) => NearbyBloc(
               bluetoothService: BluetoothService(),
+            ),
+          ),
+          // Friends BLoC
+          BlocProvider<FriendsBloc>(
+            create: (context) => FriendsBloc(
+              firestoreService: context.read<FirestoreService>(),
             ),
           ),
         ],
@@ -74,7 +80,8 @@ class MyApp extends StatelessWidget {
             primarySwatch: Colors.blue,
             scaffoldBackgroundColor: const Color(0xFFF0F2F5),
           ),
-          home: const ConnectivityWrapper(
+          // FIX: Removed 'const' to ensure the widget tree is always rebuilt with fresh context.
+          home: ConnectivityWrapper(
             child: AuthWrapper(),
           ),
         ),
@@ -93,7 +100,8 @@ class AuthWrapper extends StatelessWidget {
     return BlocBuilder<AuthBloc, AuthState>(
       builder: (context, state) {
         if (state is Authenticated) {
-          return const MainScreen();
+          // FIX: Removed 'const' to ensure MainScreen gets a fresh context.
+          return MainScreen();
         }
         // For any other state (Initial, Unauthenticated, AuthError), show the LoginScreen.
         return const LoginScreen();

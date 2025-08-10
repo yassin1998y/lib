@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:freegram/screens/chat_screen.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/screens/edit_profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
@@ -23,7 +25,7 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this); // Adjusted to 2 tabs
+    _tabController = TabController(length: 2, vsync: this);
   }
 
   @override
@@ -32,69 +34,25 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
     super.dispose();
   }
 
-  /// Toggles the follow status for a user.
-  Future<void> _toggleFollow(String userIdToToggle, bool isCurrentlyFollowing) async {
-    final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return;
-
-    try {
-      final firestoreService = context.read<FirestoreService>();
-      if (isCurrentlyFollowing) {
-        await firestoreService.unfollowUser(currentUser.uid, userIdToToggle);
-      } else {
-        await firestoreService.followUser(currentUser.uid, userIdToToggle);
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('An error occurred: $e')),
-        );
-      }
-    }
-  }
-
-  /// Builds a tappable stat item for followers/following.
-  Widget _buildStatItem(String label, int count, List<String> userIds) {
-    return GestureDetector(
-      onTap: () {
-        // Assuming there is a FollowListScreen
-        // Navigator.of(context).push(MaterialPageRoute(
-        //   builder: (_) => FollowListScreen(
-        //     title: label,
-        //     userIds: userIds,
-        //   ),
-        // ));
-      },
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(count.toString(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 2),
-          Text(label, style: const TextStyle(color: Colors.grey)),
-        ],
-      ),
+  Widget _buildStatItem(String label, int count) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(count.toString(), style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(color: Colors.grey)),
+      ],
     );
   }
 
-  /// A helper function to format the last seen timestamp with better detail.
-  String _formatLastSeen(Timestamp? lastSeenTimestamp) {
-    if (lastSeenTimestamp == null) {
-      return '';
-    }
-
+  String _formatLastSeen(DateTime lastSeen) {
     final now = DateTime.now();
-    final lastSeen = lastSeenTimestamp.toDate();
     final difference = now.difference(lastSeen);
 
     if (difference.inSeconds < 60) {
-      return 'Last seen less than a minute ago';
-    } else if (difference.inMinutes < 60) {
-      return 'Last seen ${difference.inMinutes}m ago';
-    } else if (difference.inHours < 24) {
-      return 'Last seen ${difference.inHours}h ago';
-    } else {
-      return 'Last seen ${timeago.format(lastSeen)}';
+      return 'Last seen just now';
     }
+    return 'Last seen ${timeago.format(lastSeen)}';
   }
 
   @override
@@ -108,31 +66,21 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
         backgroundColor: Colors.white,
         elevation: 1,
       ),
-      body: StreamBuilder<DocumentSnapshot>(
+      body: StreamBuilder<UserModel>(
         stream: firestoreService.getUserStream(widget.userId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (!snapshot.hasData || !snapshot.data!.exists) {
+          if (!snapshot.hasData) {
             return const Center(child: Text('User not found.'));
           }
-
-          final userData = snapshot.data!.data() as Map<String, dynamic>;
-          final String username = userData['username'] ?? 'User';
-          final String bio = userData['bio'] ?? '';
-          final String photoUrl = userData['photoUrl'] ?? '';
-          final List<String> followers = List<String>.from(userData['followers'] ?? []);
-          final List<String> following = List<String>.from(userData['following'] ?? []);
-          final bool isOnline = userData['presence'] ?? false;
-          final Timestamp? lastSeenTimestamp = userData['lastSeen'] as Timestamp?;
-
-          String lastSeenText = '';
-          if (isOnline) {
-            lastSeenText = 'Online';
-          } else if (lastSeenTimestamp != null) {
-            lastSeenText = _formatLastSeen(lastSeenTimestamp);
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
           }
+
+          final user = snapshot.data!;
+          final String lastSeenText = user.presence ? 'Online' : _formatLastSeen(user.lastSeen);
 
           return NestedScrollView(
             headerSliverBuilder: (context, innerBoxIsScrolled) {
@@ -147,16 +95,18 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
                           children: [
                             CircleAvatar(
                               radius: 40,
-                              backgroundImage: photoUrl.isNotEmpty ? NetworkImage(photoUrl) : null,
-                              child: photoUrl.isEmpty ? Text(username.isNotEmpty ? username[0].toUpperCase() : '?', style: const TextStyle(fontSize: 40)) : null,
+                              backgroundColor: Colors.grey[200],
+                              backgroundImage: user.photoUrl.isNotEmpty ? NetworkImage(user.photoUrl) : null,
+                              child: user.photoUrl.isEmpty
+                                  ? Text(user.username.isNotEmpty ? user.username[0].toUpperCase() : '?', style: const TextStyle(fontSize: 40))
+                                  : null,
                             ),
                             const SizedBox(width: 24),
                             Expanded(
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                                 children: [
-                                  _buildStatItem('Followers', followers.length, followers),
-                                  _buildStatItem('Following', following.length, following),
+                                  _buildStatItem('Friends', user.friends.length),
                                 ],
                               ),
                             )
@@ -165,9 +115,9 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
                         const SizedBox(height: 12),
                         Row(
                           children: [
-                            Text(username, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                            Text(user.username, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                             const SizedBox(width: 8),
-                            if (isOnline)
+                            if (user.presence)
                               Container(
                                 width: 10,
                                 height: 10,
@@ -178,52 +128,25 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
                               ),
                           ],
                         ),
-                        if (lastSeenText.isNotEmpty && !isOnline) ...[
+                        if (lastSeenText.isNotEmpty && !user.presence) ...[
                           const SizedBox(height: 4),
                           Text(lastSeenText, style: const TextStyle(color: Colors.grey, fontSize: 14)),
                         ],
-                        if (bio.isNotEmpty) ...[
+                        if (user.bio.isNotEmpty) ...[
                           const SizedBox(height: 4),
-                          Text(bio, style: const TextStyle(fontSize: 16)),
+                          Text(user.bio, style: const TextStyle(fontSize: 16)),
                         ],
                         const SizedBox(height: 16),
                         if (isCurrentUserProfile)
                           SizedBox(
                             width: double.infinity,
                             child: OutlinedButton(
-                              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => EditProfileScreen(currentUserData: userData))),
+                              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => EditProfileScreen(currentUserData: user.toMap()))),
                               child: const Text('Edit Profile'),
                             ),
                           )
                         else
-                          Row(
-                            children: [
-                              Expanded(
-                                child: StreamBuilder<DocumentSnapshot>(
-                                  stream: firestoreService.getUserStream(FirebaseAuth.instance.currentUser!.uid),
-                                  builder: (context, snapshot) {
-                                    if (!snapshot.hasData) return const SizedBox();
-                                    final currentUserData = snapshot.data!.data() as Map<String, dynamic>;
-                                    final bool isFollowing = (currentUserData['following'] as List).contains(widget.userId);
-                                    return ElevatedButton(
-                                      onPressed: () => _toggleFollow(widget.userId, isFollowing),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor: isFollowing ? Colors.grey : const Color(0xFF3498DB),
-                                      ),
-                                      child: Text(isFollowing ? 'Following' : 'Follow', style: const TextStyle(color: Colors.white)),
-                                    );
-                                  },
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: OutlinedButton(
-                                  onPressed: () => firestoreService.startChat(context, widget.userId, username),
-                                  child: const Text('Message'),
-                                ),
-                              ),
-                            ],
-                          ),
+                          _buildActionButtons(user),
                       ],
                     ),
                   ),
@@ -258,7 +181,73 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
     );
   }
 
-  /// Builds the grid of user posts.
+  Widget _buildActionButtons(UserModel profileUser) {
+    return BlocBuilder<FriendsBloc, FriendsState>(
+      builder: (context, state) {
+        if (state is FriendsLoaded) {
+          final currentUser = state.user;
+          Widget friendButton;
+          bool isFriend = currentUser.friends.contains(profileUser.id);
+
+          if (isFriend) {
+            friendButton = Expanded(
+              child: ElevatedButton.icon(
+                icon: const Icon(Icons.check),
+                label: const Text('Friends'),
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                onPressed: () => context.read<FriendsBloc>().add(RemoveFriend(profileUser.id)),
+              ),
+            );
+          } else if (currentUser.friendRequestsSent.contains(profileUser.id)) {
+            friendButton = Expanded(
+              child: ElevatedButton(
+                onPressed: null,
+                child: const Text('Request Sent'),
+              ),
+            );
+          } else if (currentUser.friendRequestsReceived.contains(profileUser.id)) {
+            friendButton = Expanded(
+              child: ElevatedButton(
+                onPressed: () => context.read<FriendsBloc>().add(AcceptFriendRequest(profileUser.id)),
+                child: const Text('Accept Request'),
+              ),
+            );
+          } else if (currentUser.blockedUsers.contains(profileUser.id)) {
+            return SizedBox(
+              width: double.infinity,
+              child: OutlinedButton(
+                style: OutlinedButton.styleFrom(foregroundColor: Colors.red),
+                onPressed: () => context.read<FriendsBloc>().add(UnblockUser(profileUser.id)),
+                child: const Text('Unblock'),
+              ),
+            );
+          } else {
+            friendButton = Expanded(
+              child: ElevatedButton(
+                onPressed: () => context.read<FriendsBloc>().add(SendFriendRequest(profileUser.id)),
+                child: const Text('Add Friend'),
+              ),
+            );
+          }
+
+          return Row(
+            children: [
+              friendButton,
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton(
+                  child: const Text('Message'),
+                  onPressed: () => context.read<FirestoreService>().startOrGetChat(context, profileUser.id, profileUser.username),
+                ),
+              ),
+            ],
+          );
+        }
+        return const Center(child: CircularProgressIndicator());
+      },
+    );
+  }
+
   Widget _buildPostsGrid(FirestoreService service, String userId) {
     return StreamBuilder<QuerySnapshot>(
       stream: service.getUserPostsStream(userId),
@@ -334,52 +323,5 @@ class _SliverAppBarDelegate extends SliverPersistentHeaderDelegate {
   @override
   bool shouldRebuild(_SliverAppBarDelegate oldDelegate) {
     return false;
-  }
-}
-
-/// A screen to display a list of users (e.g., followers or following).
-class FollowListScreen extends StatelessWidget {
-  final String title;
-  final List<String> userIds;
-
-  const FollowListScreen({super.key, required this.title, required this.userIds});
-
-  @override
-  Widget build(BuildContext context) {
-    final firestoreService = context.read<FirestoreService>();
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(title),
-      ),
-      body: userIds.isEmpty
-          ? const Center(child: Text('No users to display.'))
-          : ListView.builder(
-        itemCount: userIds.length,
-        itemBuilder: (context, index) {
-          return FutureBuilder<DocumentSnapshot>(
-            future: firestoreService.getUser(userIds[index]),
-            builder: (context, snapshot) {
-              if (!snapshot.hasData) {
-                return const ListTile(title: Text('Loading...'));
-              }
-              final userData = snapshot.data!.data() as Map<String, dynamic>;
-              final photoUrl = userData['photoUrl'];
-              final username = userData['username'];
-
-              return ListTile(
-                leading: CircleAvatar(
-                  backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-                  child: (photoUrl == null || photoUrl.isEmpty)
-                      ? Text(username.isNotEmpty ? username[0].toUpperCase() : '?')
-                      : null,
-                ),
-                title: Text(username),
-                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userIds[index]))),
-              );
-            },
-          );
-        },
-      ),
-    );
   }
 }

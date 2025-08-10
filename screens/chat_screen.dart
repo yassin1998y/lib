@@ -4,7 +4,10 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/models/message.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/services/firestore_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
@@ -61,12 +64,22 @@ class _ChatScreenState extends State<ChatScreen> {
     super.dispose();
   }
 
+  Future<void> _onRefresh() async {
+    _messageSubscription?.cancel();
+
+    setState(() {
+      _messages.clear();
+      _isInitialLoad = true;
+    });
+
+    _listenForMessages();
+  }
+
   void _listenForMessages() {
     final currentUser = FirebaseAuth.instance.currentUser!;
     _messageSubscription = _firestoreService.getMessagesStream(widget.chatId).listen((snapshot) {
       if (_isInitialLoad && snapshot.docs.isNotEmpty) {
         final initialMessages = snapshot.docs.map((doc) => Message.fromDoc(doc)).toList();
-        // For initial load, we still add all messages.
         _messages.addAll(initialMessages);
         _isInitialLoad = false;
       }
@@ -75,19 +88,15 @@ class _ChatScreenState extends State<ChatScreen> {
         final message = Message.fromDoc(change.doc);
         switch (change.type) {
           case DocumentChangeType.added:
-          // Prevent adding duplicates during initial load or from optimistic UI
             if (_messages.every((m) => m.id != message.id)) {
-              // Check if this message is the fulfilled version of an optimistic one
               final optimisticIndex = _messages.indexWhere((m) =>
               m.status == MessageStatus.sending &&
                   m.text == message.text &&
                   m.senderId == message.senderId);
 
               if (optimisticIndex != -1) {
-                // If found, just update the existing message in the list
                 setState(() => _messages[optimisticIndex] = message);
               } else {
-                // If it's a new message from the other user, add it to the list
                 _addMessageToList(message);
               }
             }
@@ -117,8 +126,6 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  /// **FIXED:** Inserts a new message at the beginning of the list (index 0)
-  /// to work correctly with the reversed `AnimatedList`.
   void _addMessageToList(Message message) {
     _messages.insert(0, message);
     if (_listKey.currentState != null) {
@@ -178,13 +185,13 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  /// **FIXED:** Sends a message and adds it optimistically to the start of the list (index 0).
   Future<void> _sendMessage() async {
     final currentUser = FirebaseAuth.instance.currentUser!;
     final messageText = _messageController.text.trim();
     if (messageText.isNotEmpty) {
       _typingTimer?.cancel();
       _updateTypingStatus(false);
+
       final optimisticMessage = Message.optimistic(
         senderId: currentUser.uid,
         text: messageText,
@@ -193,10 +200,10 @@ class _ChatScreenState extends State<ChatScreen> {
         replyToImageUrl: _replyingToImageUrl,
         replyToSender: _replyingToSender,
       );
-      // Add to the beginning of the list for the UI
       _addMessageToList(optimisticMessage);
       _messageController.clear();
       _cancelReply();
+
       try {
         await _firestoreService.sendMessage(
           chatId: widget.chatId,
@@ -208,8 +215,9 @@ class _ChatScreenState extends State<ChatScreen> {
           replyToSender: optimisticMessage.replyToSender,
         );
       } catch (e) {
-        debugPrint("Error sending message: $e");
-        // Optionally, update the optimistic message to show an error state
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.toString()), backgroundColor: Colors.red));
+        }
         final index = _messages.indexWhere((m) => m.id == optimisticMessage.id);
         if (index != -1) {
           setState(() {
@@ -379,19 +387,34 @@ class _ChatScreenState extends State<ChatScreen> {
           return Scaffold(appBar: AppBar(title: Text(widget.otherUsername)));
         }
         final chatData = chatSnapshot.data!.data() as Map<String, dynamic>;
-        final otherUserId = (chatData['users'] as List).firstWhere((id) => id != currentUser.uid);
-        return StreamBuilder<DocumentSnapshot>(
+
+        final List<dynamic> users = chatData['users'] ?? [];
+        if (users.isEmpty) {
+          return Scaffold(appBar: AppBar(title: Text(widget.otherUsername)), body: const Center(child: Text("Chat data is unavailable.")));
+        }
+        final otherUserId = users.firstWhere((id) => id != currentUser.uid, orElse: () => '');
+
+        final chatType = chatData['chatType'] ?? 'friend';
+        final bool canSendImages = chatType != 'contact_request';
+        final bool isContactRequest = chatType == 'contact_request';
+        final initiatorId = chatData['initiatorId'];
+        final isReceiver = isContactRequest && currentUser.uid != initiatorId;
+
+        return StreamBuilder<UserModel>(
           stream: _firestoreService.getUserStream(otherUserId),
           builder: (context, userSnapshot) {
-            final userData = userSnapshot.data?.data() as Map<String, dynamic>?;
-            final isOnline = userData?['presence'] ?? false;
-            final lastSeenTimestamp = userData?['lastSeen'] as Timestamp?;
-            final photoUrl = userData?['photoUrl'];
+            if (!userSnapshot.hasData) {
+              return Scaffold(appBar: AppBar(title: Text(widget.otherUsername)), body: const Center(child: CircularProgressIndicator()));
+            }
+            final user = userSnapshot.data!;
+            final isOnline = user.presence;
+            final lastSeen = user.lastSeen;
+            final photoUrl = user.photoUrl;
             String statusText = 'Offline';
             if (isOnline) {
               statusText = 'Online';
-            } else if (lastSeenTimestamp != null) {
-              statusText = 'last seen ${timeago.format(lastSeenTimestamp.toDate())}';
+            } else {
+              statusText = 'last seen ${timeago.format(lastSeen)}';
             }
             return Scaffold(
               appBar: AppBar(
@@ -402,7 +425,7 @@ class _ChatScreenState extends State<ChatScreen> {
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: otherUserId))),
                   child: Row(
                     children: [
-                      CircleAvatar(radius: 18, backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null, child: (photoUrl == null || photoUrl.isEmpty) ? Text(widget.otherUsername.isNotEmpty ? widget.otherUsername[0].toUpperCase() : '?') : null),
+                      CircleAvatar(radius: 18, backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null, child: (photoUrl.isEmpty) ? Text(widget.otherUsername.isNotEmpty ? widget.otherUsername[0].toUpperCase() : '?') : null),
                       const SizedBox(width: 12),
                       Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text(widget.otherUsername, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
@@ -412,75 +435,94 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
-              body: Column(
-                children: [
-                  if (_isUploading) const LinearProgressIndicator(),
-                  Expanded(
-                    child: AnimatedList(
-                      key: _listKey,
-                      reverse: true, // List is reversed to show messages from the bottom
-                      padding: const EdgeInsets.all(8.0),
-                      initialItemCount: _messages.length,
-                      itemBuilder: (context, index, animation) {
-                        // **FIXED:** Access the message directly by index.
-                        // Since new messages are inserted at index 0, the list is already in the correct
-                        // visual order for a reversed list (newest at the bottom).
-                        final message = _messages[index];
-                        final previousMessage = (index + 1 < _messages.length) ? _messages[index + 1] : null;
+              body: RefreshIndicator(
+                onRefresh: _onRefresh,
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: AnimatedList(
+                        key: _listKey,
+                        reverse: true,
+                        padding: const EdgeInsets.all(8.0),
+                        initialItemCount: _messages.length,
+                        itemBuilder: (context, index, animation) {
+                          final message = _messages[index];
+                          final previousMessage = (index + 1 < _messages.length) ? _messages[index + 1] : null;
 
-                        final messageDate = message.timestamp?.toDate();
-                        final previousMessageDate = previousMessage?.timestamp?.toDate();
+                          final messageDate = message.timestamp?.toDate();
+                          final previousMessageDate = previousMessage?.timestamp?.toDate();
 
-                        final bool showDateSeparator = messageDate != null &&
-                            (previousMessageDate == null ||
-                                messageDate.day != previousMessageDate.day ||
-                                messageDate.month != previousMessageDate.month ||
-                                messageDate.year != previousMessageDate.year);
+                          final bool showDateSeparator = messageDate != null &&
+                              (previousMessageDate == null ||
+                                  messageDate.day != previousMessageDate.day ||
+                                  messageDate.month != previousMessageDate.month ||
+                                  messageDate.year != previousMessageDate.year);
 
-                        final bool showUnreadSeparator = message.id == _firstUnreadMessageId;
+                          final bool showUnreadSeparator = message.id == _firstUnreadMessageId;
 
-                        return SizeTransition(
-                          sizeFactor: animation,
-                          child: Column(
-                            children: [
-                              // Note: Date separators might appear in reverse order now.
-                              // This might require more advanced logic if it's an issue.
-                              if (showDateSeparator) DateSeparator(date: messageDate),
-                              if (showUnreadSeparator) const UnreadSeparator(),
-                              MessageBubble(
-                                key: ValueKey(message.id),
-                                message: message,
-                                isMe: message.senderId == currentUser.uid,
-                                onLongPress: () => _showMessageActions(context, message, message.senderId == currentUser.uid),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
-                    ),
-                  ),
-                  _buildTypingIndicator(otherUserId),
-                  Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: Row(
-                      children: [
-                        IconButton(icon: const Icon(Icons.photo_camera, color: Color(0xFF3498DB)), onPressed: _isUploading ? null : _sendImage),
-                        Expanded(
-                          child: TextField(
-                            controller: _messageController,
-                            decoration: InputDecoration(
-                              hintText: 'Type a message...',
-                              filled: true,
-                              fillColor: Colors.white,
-                              border: OutlineInputBorder(borderRadius: BorderRadius.circular(20.0), borderSide: BorderSide.none),
+                          return SizeTransition(
+                            sizeFactor: animation,
+                            child: Column(
+                              children: [
+                                if (showDateSeparator) DateSeparator(date: messageDate),
+                                if (showUnreadSeparator) const UnreadSeparator(),
+                                MessageBubble(
+                                  key: ValueKey(message.id),
+                                  message: message,
+                                  isMe: message.senderId == currentUser.uid,
+                                  onLongPress: () => _showMessageActions(context, message, message.senderId == currentUser.uid),
+                                ),
+                              ],
                             ),
-                          ),
-                        ),
-                        IconButton(icon: const Icon(Icons.send, color: Color(0xFF3498DB)), onPressed: _isUploading ? null : _sendMessage),
-                      ],
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                ],
+                    _buildTypingIndicator(otherUserId),
+                    if (isContactRequest && !isReceiver)
+                      _SenderInfoBanner(),
+                    if (isReceiver)
+                      _ContactRequestBanner(
+                        otherUserId: otherUserId,
+                        onAccept: () {
+                          context.read<FriendsBloc>().add(
+                            AcceptContactRequest(
+                              chatId: widget.chatId,
+                              fromUserId: otherUserId,
+                            ),
+                          );
+                        },
+                        onDecline: () {
+                          context.read<FriendsBloc>().add(DeclineFriendRequest(otherUserId));
+                          Navigator.of(context).pop();
+                        },
+                      ),
+                    if (!isReceiver)
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Row(
+                          children: [
+                            if (canSendImages)
+                              IconButton(icon: const Icon(Icons.photo_camera, color: Color(0xFF3498DB)), onPressed: _isUploading ? null : _sendImage)
+                            else
+                              IconButton(icon: Icon(Icons.photo_camera, color: Colors.grey[400]), onPressed: null),
+                            Expanded(
+                              child: TextField(
+                                controller: _messageController,
+                                decoration: InputDecoration(
+                                  hintText: 'Type a message...',
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(20.0), borderSide: BorderSide.none),
+                                ),
+                              ),
+                            ),
+                            IconButton(icon: const Icon(Icons.send, color: Color(0xFF3498DB)), onPressed: _isUploading ? null : _sendMessage),
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
               ),
             );
           },
@@ -489,6 +531,85 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 }
+
+/// Banner shown to the SENDER of a contact request.
+class _SenderInfoBanner extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12.0),
+      color: Colors.amber[100],
+      child: Text(
+        "You can send up to 2 messages. Once they reply, you can chat freely.",
+        textAlign: TextAlign.center,
+        style: TextStyle(color: Colors.amber[800]),
+      ),
+    );
+  }
+}
+
+/// Banner shown to the RECEIVER of a contact request with action buttons.
+class _ContactRequestBanner extends StatelessWidget {
+  final String otherUserId;
+  final VoidCallback onAccept;
+  final VoidCallback onDecline;
+
+  const _ContactRequestBanner({
+    required this.otherUserId,
+    required this.onAccept,
+    required this.onDecline,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 12.0),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.grey.withOpacity(0.3),
+            spreadRadius: 2,
+            blurRadius: 5,
+            offset: const Offset(0, -3),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text(
+            "Accept message request to become friends and chat freely.",
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 14),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: onAccept,
+                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF3498DB)),
+                  child: const Text("Accept", style: TextStyle(color: Colors.white)),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: onDecline,
+                  child: const Text("Decline"),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 
 class MessageBubble extends StatelessWidget {
   final Message message;

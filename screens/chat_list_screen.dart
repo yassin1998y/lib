@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
@@ -81,7 +82,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
 
           var chats = chatSnapshot.data!.docs;
 
-          // Filter chats based on the search query
           if (_searchQuery.isNotEmpty) {
             chats = chats.where((chat) {
               final chatData = chat.data() as Map<String, dynamic>;
@@ -108,7 +108,6 @@ class _ChatListScreenState extends State<ChatListScreen> {
   }
 }
 
-/// A widget representing a single conversation in the chat list.
 class ChatListItem extends StatelessWidget {
   final DocumentSnapshot chat;
   final String currentUserId;
@@ -119,19 +118,15 @@ class ChatListItem extends StatelessWidget {
     required this.currentUserId,
   });
 
-  /// A helper function to format the last seen timestamp into a short string
-  /// without approximation symbols.
-  String _formatLastSeenShort(Timestamp? lastSeenTimestamp) {
-    if (lastSeenTimestamp == null) {
+  String _formatLastSeenShort(DateTime? lastSeen) {
+    if (lastSeen == null) {
       return '';
     }
-
     final now = DateTime.now();
-    final lastSeen = lastSeenTimestamp.toDate();
     final difference = now.difference(lastSeen);
 
     if (difference.inSeconds < 60) {
-      return ''; // No indicator for very recent activity
+      return '';
     } else if (difference.inMinutes < 60) {
       return '${difference.inMinutes}m';
     } else if (difference.inHours < 24) {
@@ -149,19 +144,19 @@ class ChatListItem extends StatelessWidget {
     final otherUserId = (chatData['users'] as List).firstWhere((id) => id != currentUserId, orElse: () => '');
     final otherUsername = usernames[otherUserId] ?? 'User';
 
-    return StreamBuilder<DocumentSnapshot>(
+    return StreamBuilder<UserModel>(
+      // FIX: Renamed getFriendshipStream to getUserStream
       stream: firestoreService.getUserStream(otherUserId),
       builder: (context, userSnapshot) {
         if (!userSnapshot.hasData) {
-          // Show a placeholder while the user data is loading
           return const ListTile();
         }
 
-        final userData = userSnapshot.data!.data() as Map<String, dynamic>;
-        final photoUrl = userData['photoUrl'];
-        final isOnline = userData['presence'] ?? false;
-        final lastSeenTimestamp = userData['lastSeen'] as Timestamp?;
-        final formattedLastSeen = _formatLastSeenShort(lastSeenTimestamp);
+        final user = userSnapshot.data!;
+        final photoUrl = user.photoUrl;
+        final isOnline = user.presence;
+        final lastSeen = user.lastSeen;
+        final formattedLastSeen = _formatLastSeenShort(lastSeen);
 
         final unreadCount = (chatData['unreadCount'] as Map<String, dynamic>?)?[currentUserId] ?? 0;
 
@@ -216,8 +211,8 @@ class ChatListItem extends StatelessWidget {
                 GestureDetector(
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: otherUserId))),
                   child: CircleAvatar(
-                    backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-                    child: (photoUrl == null || photoUrl.isEmpty)
+                    backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+                    child: (photoUrl.isEmpty)
                         ? Text(otherUsername.isNotEmpty ? otherUsername[0].toUpperCase() : '?')
                         : null,
                   ),

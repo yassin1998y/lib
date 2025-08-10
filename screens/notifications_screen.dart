@@ -1,6 +1,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/screens/post_detail_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
@@ -103,6 +105,7 @@ class NotificationTile extends StatelessWidget {
     final Timestamp? timestamp = notification['timestamp'];
 
     Widget title;
+    Widget? trailing;
     IconData iconData = Icons.info;
     Color iconColor = Colors.grey;
 
@@ -120,6 +123,16 @@ class NotificationTile extends StatelessWidget {
         );
         iconData = Icons.favorite;
         iconColor = Colors.red;
+        if (postImageUrl != null && postImageUrl.isNotEmpty) {
+          trailing = SizedBox(
+            width: 50,
+            height: 50,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4.0),
+              child: Image.network(postImageUrl, fit: BoxFit.cover),
+            ),
+          );
+        }
         break;
       case 'comment':
         title = RichText(
@@ -133,22 +146,83 @@ class NotificationTile extends StatelessWidget {
         );
         iconData = Icons.comment;
         iconColor = Colors.blue;
+        if (postImageUrl != null && postImageUrl.isNotEmpty) {
+          trailing = SizedBox(
+            width: 50,
+            height: 50,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(4.0),
+              child: Image.network(postImageUrl, fit: BoxFit.cover),
+            ),
+          );
+        }
         break;
-      case 'follow':
+      case 'friend_request_received': // FIX: Standardized type name
         title = RichText(
           text: TextSpan(
             style: DefaultTextStyle.of(context).style,
             children: [
               TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
-              const TextSpan(text: ' started following you.'),
+              const TextSpan(text: ' sent you a friend request.'),
             ],
           ),
         );
         iconData = Icons.person_add;
         iconColor = Colors.green;
+        trailing = Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextButton(
+              onPressed: () {
+                context.read<FriendsBloc>().add(AcceptFriendRequest(fromUserId));
+              },
+              style: TextButton.styleFrom(
+                backgroundColor: Colors.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('Accept'),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: () {
+                context.read<FriendsBloc>().add(DeclineFriendRequest(fromUserId));
+              },
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.grey[700],
+                side: BorderSide(color: Colors.grey[400]!),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              ),
+              child: const Text('Decline'),
+            ),
+          ],
+        );
+        break;
+      case 'request_accepted':
+        title = RichText(
+          text: TextSpan(
+            style: DefaultTextStyle.of(context).style,
+            children: [
+              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
+              const TextSpan(text: ' accepted your friend request.'),
+            ],
+          ),
+        );
+        iconData = Icons.check_circle;
+        iconColor = Colors.blue;
         break;
       default:
-        title = const Text('New notification.');
+        title = RichText(
+          text: TextSpan(
+            style: DefaultTextStyle.of(context).style,
+            children: [
+              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
+              const TextSpan(text: ' sent you a new notification.'),
+            ],
+          ),
+        );
     }
 
     return ListTile(
@@ -172,16 +246,7 @@ class NotificationTile extends StatelessWidget {
         timestamp != null ? timeago.format(timestamp.toDate()) : '',
         style: const TextStyle(color: Colors.grey, fontSize: 12),
       ),
-      trailing: (postImageUrl != null && postImageUrl.isNotEmpty)
-          ? SizedBox(
-        width: 50,
-        height: 50,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(4.0),
-          child: Image.network(postImageUrl, fit: BoxFit.cover),
-        ),
-      )
-          : null,
+      trailing: trailing,
       onTap: () async {
         // Navigate to the relevant post or profile
         if (postId != null) {
@@ -189,7 +254,7 @@ class NotificationTile extends StatelessWidget {
           if (postDoc.exists && context.mounted) {
             Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postSnapshot: postDoc)));
           }
-        } else if (type == 'follow' && fromUserId.isNotEmpty) {
+        } else if (fromUserId.isNotEmpty) {
           Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUserId)));
         }
       },

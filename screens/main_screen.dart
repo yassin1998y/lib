@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/auth_bloc.dart';
+import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/screens/chat_list_screen.dart';
 import 'package:freegram/screens/create_post_screen.dart';
 import 'package:freegram/screens/discover_screen.dart';
@@ -13,7 +14,6 @@ import 'package:freegram/screens/nearby_screen.dart';
 import 'package:freegram/screens/notifications_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
-import 'package:freegram/seed_database.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:freegram/widgets/post_card.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -37,6 +37,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     final authState = context.read<AuthBloc>().state;
     if (authState is Authenticated) {
+      // Restore the FriendsBloc loading.
+      context.read<FriendsBloc>().add(LoadFriends());
       _setupFcm(authState.user.uid);
       _updateUserPresence(authState.user.uid, true);
       _widgetOptions = <Widget>[
@@ -213,11 +215,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NearbyScreen())),
             ),
           _buildActivityIconWithBadge(),
-          IconButton(
-            icon: const Icon(Icons.bug_report, color: Colors.red),
-            onPressed: () => DatabaseSeeder().seedUsers(context),
-            tooltip: 'Seed Database',
-          ),
           PopupMenuButton<String>(
             onSelected: (value) async {
               if (value == 'logout' && authState is Authenticated) {
@@ -331,13 +328,8 @@ class _FeedWidgetState extends State<FeedWidget> {
 
     try {
       final firestoreService = context.read<FirestoreService>();
-      final userDoc = await firestoreService.getUser(currentUser.uid);
-      final userData = userDoc.data() as Map<String, dynamic>;
-      final List<String> followingIds = List<String>.from(userData['following'] ?? []);
-      followingIds.add(currentUser.uid);
-
       final QuerySnapshot querySnapshot = await firestoreService.getFeedPosts(
-        followingIds,
+        currentUser.uid,
         lastDocument: _lastDocument,
       );
 
@@ -379,7 +371,8 @@ class _FeedWidgetState extends State<FeedWidget> {
           slivers: [
             SliverFillRemaining(
               child: Center(
-                child: Text('No posts to show. Start following people!'),
+                // Updated text to reflect the restored friends system
+                child: Text('No posts to show. Start adding friends!'),
               ),
             ),
           ],
@@ -404,4 +397,3 @@ class _FeedWidgetState extends State<FeedWidget> {
     );
   }
 }
-

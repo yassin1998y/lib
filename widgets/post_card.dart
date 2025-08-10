@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/screens/comments_screen.dart';
 import 'package:freegram/screens/post_detail_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
@@ -16,14 +17,12 @@ class PostCard extends StatefulWidget {
 }
 
 class _PostCardState extends State<PostCard> {
-  /// Toggles a like on the post using the FirestoreService.
   Future<void> _toggleLike() async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
 
     final postData = widget.post.data() as Map<String, dynamic>;
     try {
-      // Use the centralized service to handle the logic
       await context.read<FirestoreService>().togglePostLike(
         postId: widget.post.id,
         userId: currentUser.uid,
@@ -43,7 +42,6 @@ class _PostCardState extends State<PostCard> {
     }
   }
 
-  /// Deletes the post after user confirmation.
   Future<void> _deletePost() async {
     final messenger = ScaffoldMessenger.of(context);
 
@@ -67,7 +65,6 @@ class _PostCardState extends State<PostCard> {
 
     if (shouldDelete == true) {
       try {
-        // Use the centralized service to handle deletion
         await context.read<FirestoreService>().deletePost(widget.post.id);
         messenger.showSnackBar(const SnackBar(content: Text('Post deleted')));
       } catch (e) {
@@ -95,7 +92,6 @@ class _PostCardState extends State<PostCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // --- Post Header ---
           Padding(
             padding: const EdgeInsets.all(12.0),
             child: Row(
@@ -104,19 +100,19 @@ class _PostCardState extends State<PostCard> {
                   onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
                   child: Row(
                     children: [
-                      // User avatar with real-time updates
-                      StreamBuilder<DocumentSnapshot>(
+                      StreamBuilder<UserModel>(
+                        // FIX: Renamed getUserStream to getUserStream
                         stream: firestoreService.getUserStream(userId),
                         builder: (context, snapshot) {
                           if (!snapshot.hasData) {
                             return const CircleAvatar(radius: 18, backgroundColor: Colors.grey);
                           }
-                          final userData = snapshot.data!.data() as Map<String, dynamic>;
-                          final photoUrl = userData['photoUrl'];
+                          final user = snapshot.data!;
+                          final photoUrl = user.photoUrl;
                           return CircleAvatar(
                             radius: 18,
-                            backgroundImage: (photoUrl != null && photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
-                            child: (photoUrl == null || photoUrl.isEmpty)
+                            backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+                            child: (photoUrl.isEmpty)
                                 ? Text(username.isNotEmpty ? username[0].toUpperCase() : 'A', style: const TextStyle(color: Colors.white))
                                 : null,
                           );
@@ -136,8 +132,6 @@ class _PostCardState extends State<PostCard> {
               ],
             ),
           ),
-
-          // --- Post Image/Video ---
           GestureDetector(
             onTap: () {
               Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postSnapshot: widget.post)));
@@ -163,8 +157,6 @@ class _PostCardState extends State<PostCard> {
               ],
             ),
           ),
-
-          // --- Action Buttons & Like Count ---
           StreamBuilder<QuerySnapshot>(
             stream: firestoreService.getPostLikesStream(widget.post.id),
             builder: (context, snapshot) {
@@ -200,8 +192,6 @@ class _PostCardState extends State<PostCard> {
               );
             },
           ),
-
-          // --- Caption & Comments Preview ---
           Padding(
             padding: const EdgeInsets.fromLTRB(12.0, 4.0, 12.0, 12.0),
             child: Column(
@@ -217,7 +207,6 @@ class _PostCardState extends State<PostCard> {
                   ),
                 ),
                 const SizedBox(height: 8.0),
-                // Real-time preview of the latest comments
                 StreamBuilder<QuerySnapshot>(
                   stream: firestoreService.getPostCommentsStream(widget.post.id, limit: 2),
                   builder: (context, snapshot) {
