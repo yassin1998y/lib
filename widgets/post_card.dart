@@ -2,28 +2,66 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/screens/chat_screen.dart'; // Contains FullScreenImageScreen
 import 'package:freegram/screens/comments_screen.dart';
 import 'package:freegram/screens/post_detail_screen.dart';
-import 'package:freegram/screens/profile_screen.dart';
+import 'package:freegram/screens/profile_screen.dart'; // Corrected import
 import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
+import 'package:timeago/timeago.dart' as timeago;
 
 class PostCard extends StatefulWidget {
   final DocumentSnapshot post;
-  const PostCard({super.key, required this.post});
+  final bool isDetailView; // Flag to check the context
+
+  const PostCard({
+    super.key,
+    required this.post,
+    this.isDetailView = false, // Default to false (for the feed)
+  });
 
   @override
   State<PostCard> createState() => _PostCardState();
 }
 
-class _PostCardState extends State<PostCard> {
-  Future<void> _toggleLike() async {
+class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
+  bool _isHeartAnimating = false;
+  late AnimationController _animationController;
+  late Animation<double> _scaleAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+    _scaleAnimation = Tween<double>(begin: 0.8, end: 1.2).animate(
+      CurvedAnimation(parent: _animationController, curve: Curves.elasticOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _toggleLike({bool forceLike = false}) async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
 
     final postData = widget.post.data() as Map<String, dynamic>;
+    final firestoreService = context.read<FirestoreService>();
+
+    if (forceLike) {
+      final likesSnapshot = await firestoreService.getPostLikesStream(widget.post.id).first;
+      final userHasLiked = likesSnapshot.docs.any((doc) => doc.id == currentUser.uid);
+      if (userHasLiked) return;
+    }
+
     try {
-      await context.read<FirestoreService>().togglePostLike(
+      await firestoreService.togglePostLike(
         postId: widget.post.id,
         userId: currentUser.uid,
         postOwnerId: postData['userId'],
@@ -39,6 +77,17 @@ class _PostCardState extends State<PostCard> {
           SnackBar(content: Text('An error occurred: $e')),
         );
       }
+    }
+  }
+
+  Future<void> _onDoubleTap() async {
+    setState(() => _isHeartAnimating = true);
+    _animationController.forward();
+    await _toggleLike(forceLike: true);
+    await Future.delayed(const Duration(milliseconds: 800));
+    if (mounted) {
+      _animationController.reverse();
+      setState(() => _isHeartAnimating = false);
     }
   }
 
@@ -82,6 +131,7 @@ class _PostCardState extends State<PostCard> {
     final String imageUrl = postData['imageUrl'] ?? 'https://placehold.co/600x400/E5E5E5/333333?text=No+Image';
     final String caption = postData['caption'] ?? '';
     final bool isReel = postData['postType'] == 'reel';
+    final Timestamp? timestamp = postData['timestamp'];
     final currentUser = FirebaseAuth.instance.currentUser;
     final bool isOwner = currentUser?.uid == userId;
 
@@ -101,7 +151,6 @@ class _PostCardState extends State<PostCard> {
                   child: Row(
                     children: [
                       StreamBuilder<UserModel>(
-                        // FIX: Renamed getUserStream to getUserStream
                         stream: firestoreService.getUserStream(userId),
                         builder: (context, snapshot) {
                           if (!snapshot.hasData) {
@@ -119,7 +168,17 @@ class _PostCardState extends State<PostCard> {
                         },
                       ),
                       const SizedBox(width: 12.0),
-                      Text(username, style: const TextStyle(fontWeight: FontWeight.bold)),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(username, style: const TextStyle(fontWeight: FontWeight.bold)),
+                          if (timestamp != null)
+                            Text(
+                              timeago.format(timestamp.toDate()),
+                              style: const TextStyle(color: Colors.grey, fontSize: 12),
+                            ),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -133,8 +192,13 @@ class _PostCardState extends State<PostCard> {
             ),
           ),
           GestureDetector(
+            onDoubleTap: _onDoubleTap,
             onTap: () {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postSnapshot: widget.post)));
+              if (widget.isDetailView) {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => FullScreenImageScreen(imageUrl: imageUrl)));
+              } else {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postSnapshot: widget.post)));
+              }
             },
             child: Stack(
               alignment: Alignment.center,
@@ -154,6 +218,18 @@ class _PostCardState extends State<PostCard> {
                 ),
                 if (isReel)
                   const Icon(Icons.play_circle_outline, color: Colors.white, size: 60),
+                AnimatedOpacity(
+                  duration: const Duration(milliseconds: 200),
+                  opacity: _isHeartAnimating ? 1 : 0,
+                  child: ScaleTransition(
+                    scale: _scaleAnimation,
+                    child: const Icon(
+                      Icons.favorite,
+                      color: Colors.white,
+                      size: 100,
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -175,7 +251,7 @@ class _PostCardState extends State<PostCard> {
                             userHasLiked ? Icons.favorite : Icons.favorite_border,
                             color: userHasLiked ? const Color(0xFFE74C3C) : Colors.black87,
                           ),
-                          onPressed: _toggleLike,
+                          onPressed: () => _toggleLike(),
                         ),
                         IconButton(
                             icon: const Icon(Icons.chat_bubble_outline),
@@ -211,9 +287,12 @@ class _PostCardState extends State<PostCard> {
                   stream: firestoreService.getPostCommentsStream(widget.post.id, limit: 2),
                   builder: (context, snapshot) {
                     if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                      return GestureDetector(
-                          onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => CommentsScreen(postId: widget.post.id))),
-                          child: Text('View all comments', style: TextStyle(color: Colors.grey[600]))
+                      return InkWell(
+                        onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => CommentsScreen(postId: widget.post.id))),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4.0),
+                          child: Text('View all comments', style: TextStyle(color: Colors.grey[600])),
+                        ),
                       );
                     }
                     return Column(

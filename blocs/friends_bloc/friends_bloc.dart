@@ -25,7 +25,6 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
     on<_FriendsUpdated>(_onFriendsUpdated);
     on<SendFriendRequest>(_onSendFriendRequest);
     on<AcceptFriendRequest>(_onAcceptFriendRequest);
-    on<AcceptContactRequest>(_onAcceptContactRequest); // New event handler
     on<DeclineFriendRequest>(_onDeclineFriendRequest);
     on<RemoveFriend>(_onRemoveFriend);
     on<BlockUser>(_onBlockUser);
@@ -56,40 +55,65 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
     emit(FriendsLoaded(user: event.user));
   }
 
-  Future<void> _onSendFriendRequest(SendFriendRequest event, Emitter<FriendsState> emit) async {
+  Future<void> _onSendFriendRequest(
+      SendFriendRequest event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
-    if (user != null) {
+    if (user != null && state is FriendsLoaded) {
+      final currentState = state as FriendsLoaded;
+
+      // Optimistically update the UI
+      final optimisticUser = UserModel(
+        id: currentState.user.id,
+        username: currentState.user.username,
+        email: currentState.user.email,
+        photoUrl: currentState.user.photoUrl,
+        bio: currentState.user.bio,
+        fcmToken: currentState.user.fcmToken,
+        presence: currentState.user.presence,
+        lastSeen: currentState.user.lastSeen,
+        country: currentState.user.country,
+        age: currentState.user.age,
+        gender: currentState.user.gender,
+        interests: currentState.user.interests,
+        createdAt: currentState.user.createdAt,
+        friends: currentState.user.friends,
+        friendRequestsSent: [
+          ...currentState.user.friendRequestsSent,
+          event.toUserId
+        ],
+        friendRequestsReceived: currentState.user.friendRequestsReceived,
+        blockedUsers: currentState.user.blockedUsers,
+        coins: currentState.user.coins,
+        superLikes: currentState.user.superLikes,
+        // FIX: Added the missing required parameter
+        lastFreeSuperLike: currentState.user.lastFreeSuperLike,
+      );
+      emit(FriendsRequestSent(user: optimisticUser));
+
+      // Perform the actual backend operation
       await _firestoreService.sendFriendRequest(user.uid, event.toUserId);
+      // The user stream will push the final, correct state from Firestore automatically.
     }
   }
 
-  Future<void> _onAcceptFriendRequest(AcceptFriendRequest event, Emitter<FriendsState> emit) async {
+  Future<void> _onAcceptFriendRequest(
+      AcceptFriendRequest event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
       await _firestoreService.acceptFriendRequest(user.uid, event.fromUserId);
     }
   }
 
-  // New handler for accepting a request from a chat
-  Future<void> _onAcceptContactRequest(AcceptContactRequest event, Emitter<FriendsState> emit) async {
-    final user = _firebaseAuth.currentUser;
-    if (user != null) {
-      await _firestoreService.acceptContactRequest(
-        chatId: event.chatId,
-        currentUserId: user.uid,
-        requestingUserId: event.fromUserId,
-      );
-    }
-  }
-
-  Future<void> _onDeclineFriendRequest(DeclineFriendRequest event, Emitter<FriendsState> emit) async {
+  Future<void> _onDeclineFriendRequest(
+      DeclineFriendRequest event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
       await _firestoreService.declineFriendRequest(user.uid, event.fromUserId);
     }
   }
 
-  Future<void> _onRemoveFriend(RemoveFriend event, Emitter<FriendsState> emit) async {
+  Future<void> _onRemoveFriend(
+      RemoveFriend event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
       await _firestoreService.removeFriend(user.uid, event.friendId);
@@ -103,15 +127,18 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
     }
   }
 
-  Future<void> _onUnblockUser(UnblockUser event, Emitter<FriendsState> emit) async {
+  Future<void> _onUnblockUser(
+      UnblockUser event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
       await _firestoreService.unblockUser(user.uid, event.userIdToUnblock);
     }
   }
 
-  Future<void> _onToggleFavoriteFriend(ToggleFavoriteFriend event, Emitter<FriendsState> emit) async {
-    debugPrint("Toggling favorite status is not implemented in the current data model.");
+  Future<void> _onToggleFavoriteFriend(
+      ToggleFavoriteFriend event, Emitter<FriendsState> emit) async {
+    debugPrint(
+        "Toggling favorite status is not implemented in the current data model.");
   }
 
   @override

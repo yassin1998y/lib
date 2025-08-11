@@ -1,8 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
+import 'package:freegram/screens/friends_list_screen.dart';
 import 'package:freegram/screens/post_detail_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
 import 'package:freegram/services/firestore_service.dart';
@@ -22,10 +21,15 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
 
-    final success = await context.read<FirestoreService>().markAllNotificationsAsRead(currentUser.uid);
+    final success = await context
+        .read<FirestoreService>()
+        .markAllNotificationsAsRead(currentUser.uid);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(success ? 'All notifications marked as read.' : 'No new notifications.')),
+        SnackBar(
+            content: Text(success
+                ? 'All notifications marked as read.'
+                : 'No new notifications.')),
       );
     }
   }
@@ -33,7 +37,9 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
   @override
   Widget build(BuildContext context) {
     final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null) return const Scaffold(body: Center(child: Text('Please log in.')));
+    if (currentUser == null) {
+      return const Scaffold(body: Center(child: Text('Please log in.')));
+    }
 
     final firestoreService = context.read<FirestoreService>();
 
@@ -76,7 +82,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
               // Mark notification as read when it's built
               if (notif['read'] == false) {
-                firestoreService.markNotificationAsRead(currentUser.uid, notifDoc.id);
+                firestoreService.markNotificationAsRead(
+                    currentUser.uid, notifDoc.id);
               }
 
               return NotificationTile(notification: notif);
@@ -106,8 +113,10 @@ class NotificationTile extends StatelessWidget {
 
     Widget title;
     Widget? trailing;
-    IconData iconData = Icons.info;
-    Color iconColor = Colors.grey;
+    VoidCallback? onTap;
+    Color? tileColor;
+    IconData leadingIcon = Icons.person;
+    Color leadingIconColor = Colors.grey;
 
     // Determine the text and icon based on the notification type
     switch (type) {
@@ -116,13 +125,15 @@ class NotificationTile extends StatelessWidget {
           text: TextSpan(
             style: DefaultTextStyle.of(context).style,
             children: [
-              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
+              TextSpan(
+                  text: fromUsername,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
               const TextSpan(text: ' liked your post.'),
             ],
           ),
         );
-        iconData = Icons.favorite;
-        iconColor = Colors.red;
+        leadingIcon = Icons.favorite;
+        leadingIconColor = Colors.red;
         if (postImageUrl != null && postImageUrl.isNotEmpty) {
           trailing = SizedBox(
             width: 50,
@@ -133,19 +144,31 @@ class NotificationTile extends StatelessWidget {
             ),
           );
         }
+        onTap = () async {
+          if (postId != null) {
+            final postDoc =
+            await context.read<FirestoreService>().getPost(postId);
+            if (postDoc.exists && context.mounted) {
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => PostDetailScreen(postSnapshot: postDoc)));
+            }
+          }
+        };
         break;
       case 'comment':
         title = RichText(
           text: TextSpan(
             style: DefaultTextStyle.of(context).style,
             children: [
-              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
+              TextSpan(
+                  text: fromUsername,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
               TextSpan(text: ' commented: ${commentText ?? ''}'),
             ],
           ),
         );
-        iconData = Icons.comment;
-        iconColor = Colors.blue;
+        leadingIcon = Icons.comment;
+        leadingIconColor = Colors.blue;
         if (postImageUrl != null && postImageUrl.isNotEmpty) {
           trailing = SizedBox(
             width: 50,
@@ -156,108 +179,112 @@ class NotificationTile extends StatelessWidget {
             ),
           );
         }
+        onTap = () async {
+          if (postId != null) {
+            final postDoc =
+            await context.read<FirestoreService>().getPost(postId);
+            if (postDoc.exists && context.mounted) {
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => PostDetailScreen(postSnapshot: postDoc)));
+            }
+          }
+        };
         break;
-      case 'friend_request_received': // FIX: Standardized type name
+      case 'friend_request_received':
         title = RichText(
           text: TextSpan(
             style: DefaultTextStyle.of(context).style,
             children: [
-              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
+              TextSpan(
+                  text: fromUsername,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
               const TextSpan(text: ' sent you a friend request.'),
             ],
           ),
         );
-        iconData = Icons.person_add;
-        iconColor = Colors.green;
-        trailing = Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextButton(
-              onPressed: () {
-                context.read<FriendsBloc>().add(AcceptFriendRequest(fromUserId));
-              },
-              style: TextButton.styleFrom(
-                backgroundColor: Colors.blue,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              child: const Text('Accept'),
-            ),
-            const SizedBox(width: 8),
-            TextButton(
-              onPressed: () {
-                context.read<FriendsBloc>().add(DeclineFriendRequest(fromUserId));
-              },
-              style: TextButton.styleFrom(
-                foregroundColor: Colors.grey[700],
-                side: BorderSide(color: Colors.grey[400]!),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              ),
-              child: const Text('Decline'),
-            ),
-          ],
-        );
+        leadingIcon = Icons.person_add;
+        leadingIconColor = Colors.green;
+        onTap = () {
+          Navigator.of(context).push(MaterialPageRoute(
+              builder: (_) => const FriendsListScreen(initialIndex: 1)));
+        };
         break;
       case 'request_accepted':
         title = RichText(
           text: TextSpan(
             style: DefaultTextStyle.of(context).style,
             children: [
-              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
+              TextSpan(
+                  text: fromUsername,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
               const TextSpan(text: ' accepted your friend request.'),
             ],
           ),
         );
-        iconData = Icons.check_circle;
-        iconColor = Colors.blue;
+        leadingIcon = Icons.check_circle;
+        leadingIconColor = Colors.blue;
+        onTap = () {
+          if (fromUserId.isNotEmpty) {
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => ProfileScreen(userId: fromUserId)));
+          }
+        };
         break;
-      default:
+    // NEW: Handle Super Like notifications
+      case 'super_like':
         title = RichText(
           text: TextSpan(
             style: DefaultTextStyle.of(context).style,
             children: [
-              TextSpan(text: fromUsername, style: const TextStyle(fontWeight: FontWeight.bold)),
-              const TextSpan(text: ' sent you a new notification.'),
+              TextSpan(
+                  text: fromUsername,
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              const TextSpan(text: ' Super Liked you!'),
             ],
           ),
         );
+        leadingIcon = Icons.star;
+        leadingIconColor = Colors.white; // Icon color for the gradient
+        tileColor = Colors.blue.shade100.withOpacity(0.5); // Highlight color
+        onTap = () {
+          if (fromUserId.isNotEmpty) {
+            Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => ProfileScreen(userId: fromUserId)));
+          }
+        };
+        break;
+      default:
+        title = Text('$fromUsername sent you a notification.');
     }
 
-    return ListTile(
-      leading: GestureDetector(
-        onTap: () {
-          if (fromUserId.isNotEmpty) {
-            Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUserId)));
-          }
-        },
-        child: CircleAvatar(
-          backgroundImage: (fromUserPhotoUrl != null && fromUserPhotoUrl.isNotEmpty)
-              ? NetworkImage(fromUserPhotoUrl)
-              : null,
-          child: (fromUserPhotoUrl == null || fromUserPhotoUrl.isEmpty)
-              ? Icon(iconData, color: iconColor, size: 20)
-              : null,
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      color: tileColor,
+      child: ListTile(
+        leading: GestureDetector(
+          onTap: () {
+            if (fromUserId.isNotEmpty) {
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => ProfileScreen(userId: fromUserId)));
+            }
+          },
+          child: CircleAvatar(
+            backgroundImage: (fromUserPhotoUrl != null && fromUserPhotoUrl.isNotEmpty)
+                ? NetworkImage(fromUserPhotoUrl)
+                : null,
+            child: (fromUserPhotoUrl == null || fromUserPhotoUrl.isEmpty)
+                ? Icon(leadingIcon, color: leadingIconColor, size: 20)
+                : null,
+          ),
         ),
+        title: title,
+        subtitle: Text(
+          timestamp != null ? timeago.format(timestamp.toDate()) : '',
+          style: const TextStyle(color: Colors.grey, fontSize: 12),
+        ),
+        trailing: trailing,
+        onTap: onTap,
       ),
-      title: title,
-      subtitle: Text(
-        timestamp != null ? timeago.format(timestamp.toDate()) : '',
-        style: const TextStyle(color: Colors.grey, fontSize: 12),
-      ),
-      trailing: trailing,
-      onTap: () async {
-        // Navigate to the relevant post or profile
-        if (postId != null) {
-          final postDoc = await context.read<FirestoreService>().getPost(postId);
-          if (postDoc.exists && context.mounted) {
-            Navigator.of(context).push(MaterialPageRoute(builder: (_) => PostDetailScreen(postSnapshot: postDoc)));
-          }
-        } else if (fromUserId.isNotEmpty) {
-          Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: fromUserId)));
-        }
-      },
     );
   }
 }

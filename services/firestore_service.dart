@@ -4,6 +4,7 @@ import 'package:firebase_database/firebase_database.dart' as rtdb;
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart'; // Import the new UserModel
 import 'package:freegram/screens/chat_screen.dart';
+import 'package:freegram/screens/friends_list_screen.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 
@@ -108,7 +109,7 @@ class FirestoreService {
       photoUrl: photoUrl ?? '',
       lastSeen: DateTime.now(),
       createdAt: DateTime.now(),
-      // All relationship fields are initialized as empty lists.
+      lastFreeSuperLike: DateTime.now().subtract(const Duration(days: 1)),
     );
     return _db.collection('users').doc(uid).set(newUser.toMap());
   }
@@ -156,8 +157,12 @@ class FirestoreService {
     final fromUserRef = _db.collection('users').doc(fromUserId);
     final toUserRef = _db.collection('users').doc(toUserId);
 
-    batch.update(fromUserRef, {'friendRequestsSent': FieldValue.arrayUnion([toUserId])});
-    batch.update(toUserRef, {'friendRequestsReceived': FieldValue.arrayUnion([fromUserId])});
+    batch.update(fromUserRef, {
+      'friendRequestsSent': FieldValue.arrayUnion([toUserId])
+    });
+    batch.update(toUserRef, {
+      'friendRequestsReceived': FieldValue.arrayUnion([fromUserId])
+    });
 
     await batch.commit();
 
@@ -165,53 +170,36 @@ class FirestoreService {
     final fromUser = await getUser(fromUserId);
     await addNotification(
       userId: toUserId,
-      type: 'friend_request_received', // FIX: Standardized type name
+      type: 'friend_request_received',
       fromUserId: fromUserId,
       fromUsername: fromUser.username,
       fromUserPhotoUrl: fromUser.photoUrl,
     );
   }
 
-  /// Private helper to add friendship operations to a batch.
-  void _addFriendshipToBatch(WriteBatch batch, String currentUserId, String requestingUserId) {
+  /// Accepts a friend request, notifies the original sender, and converts any
+  /// existing 'contact_request' chat into a 'friend_chat'.
+  Future<void> acceptFriendRequest(
+      String currentUserId, String requestingUserId) async {
+    final batch = _db.batch();
     final currentUserRef = _db.collection('users').doc(currentUserId);
     final requestingUserRef = _db.collection('users').doc(requestingUserId);
 
-    batch.update(currentUserRef, {'friendRequestsReceived': FieldValue.arrayRemove([requestingUserId])});
-    batch.update(requestingUserRef, {'friendRequestsSent': FieldValue.arrayRemove([currentUserId])});
+    // Update friend lists for both users
+    batch.update(currentUserRef, {
+      'friendRequestsReceived': FieldValue.arrayRemove([requestingUserId]),
+      'friends': FieldValue.arrayUnion([requestingUserId])
+    });
+    batch.update(requestingUserRef, {
+      'friendRequestsSent': FieldValue.arrayRemove([currentUserId]),
+      'friends': FieldValue.arrayUnion([currentUserId])
+    });
 
-    batch.update(currentUserRef, {'friends': FieldValue.arrayUnion([requestingUserId])});
-    batch.update(requestingUserRef, {'friends': FieldValue.arrayUnion([currentUserId])});
-  }
-
-  /// Accepts a friend request and notifies the original sender.
-  Future<void> acceptFriendRequest(String currentUserId, String requestingUserId) async {
-    final batch = _db.batch();
-    _addFriendshipToBatch(batch, currentUserId, requestingUserId);
-    await batch.commit();
-
-    // After committing, send a notification back to the original sender.
-    final currentUser = await getUser(currentUserId);
-    await addNotification(
-      userId: requestingUserId,
-      type: 'request_accepted',
-      fromUserId: currentUserId,
-      fromUsername: currentUser.username,
-      fromUserPhotoUrl: currentUser.photoUrl,
-    );
-  }
-
-  /// Accepts a contact request, becomes friends, unlocks the chat, and sends a notification.
-  Future<void> acceptContactRequest({
-    required String chatId,
-    required String currentUserId,
-    required String requestingUserId,
-  }) async {
-    final batch = _db.batch();
+    // Convert the chat type if a contact_request chat exists
+    final ids = [currentUserId, requestingUserId]..sort();
+    final chatId = ids.join('_');
     final chatRef = _db.collection('chats').doc(chatId);
-
-    batch.update(chatRef, {'chatType': 'friend_chat'});
-    _addFriendshipToBatch(batch, currentUserId, requestingUserId);
+    batch.set(chatRef, {'chatType': 'friend_chat'}, SetOptions(merge: true));
 
     await batch.commit();
 
@@ -226,14 +214,26 @@ class FirestoreService {
     );
   }
 
-  /// Declines a friend request. Atomically updates both users' documents.
-  Future<void> declineFriendRequest(String currentUserId, String requestingUserId) async {
+  /// Declines a friend request and deletes the associated contact_request chat.
+  Future<void> declineFriendRequest(
+      String currentUserId, String requestingUserId) async {
     final batch = _db.batch();
     final currentUserRef = _db.collection('users').doc(currentUserId);
     final requestingUserRef = _db.collection('users').doc(requestingUserId);
 
-    batch.update(currentUserRef, {'friendRequestsReceived': FieldValue.arrayRemove([requestingUserId])});
-    batch.update(requestingUserRef, {'friendRequestsSent': FieldValue.arrayRemove([currentUserId])});
+    // Remove friend request from both users' documents
+    batch.update(currentUserRef, {
+      'friendRequestsReceived': FieldValue.arrayRemove([requestingUserId])
+    });
+    batch.update(requestingUserRef, {
+      'friendRequestsSent': FieldValue.arrayRemove([currentUserId])
+    });
+
+    // Find and delete the corresponding 'contact_request' chat
+    final ids = [currentUserId, requestingUserId]..sort();
+    final chatId = ids.join('_');
+    final chatRef = _db.collection('chats').doc(chatId);
+    batch.delete(chatRef);
 
     await batch.commit();
   }
@@ -244,24 +244,68 @@ class FirestoreService {
     final currentUserRef = _db.collection('users').doc(currentUserId);
     final friendUserRef = _db.collection('users').doc(friendId);
 
-    batch.update(currentUserRef, {'friends': FieldValue.arrayRemove([friendId])});
-    batch.update(friendUserRef, {'friends': FieldValue.arrayRemove([currentUserId])});
+    batch.update(currentUserRef, {
+      'friends': FieldValue.arrayRemove([friendId])
+    });
+    batch.update(friendUserRef, {
+      'friends': FieldValue.arrayRemove([currentUserId])
+    });
 
     await batch.commit();
   }
 
-  /// Blocks a user, ensuring they are removed as a friend first.
+  /// Blocks a user, ensuring they are removed as a friend and any chat is deleted.
   Future<void> blockUser(String currentUserId, String userToBlockId) async {
+    // First, ensure the friendship is removed.
     await removeFriend(currentUserId, userToBlockId);
+
+    // Then, add the user to the block list.
     await _db.collection('users').doc(currentUserId).update({
       'blockedUsers': FieldValue.arrayUnion([userToBlockId])
     });
+
+    // Finally, delete any chat between them.
+    final ids = [currentUserId, userToBlockId]..sort();
+    final chatId = ids.join('_');
+    await deleteChat(chatId);
   }
 
   /// Unblocks a user.
   Future<void> unblockUser(String currentUserId, String userToUnblockId) {
     return _db.collection('users').doc(currentUserId).update({
       'blockedUsers': FieldValue.arrayRemove([userToUnblockId])
+    });
+  }
+
+  // --- Store & Reward Methods ---
+
+  /// Grants a reward to a user after they watch an ad.
+  Future<void> grantAdReward(String userId) {
+    return _db.collection('users').doc(userId).update({
+      'superLikes': FieldValue.increment(1),
+    });
+  }
+
+  /// Purchases an item from the store using in-app coins.
+  Future<void> purchaseWithCoins(String userId,
+      {required int coinCost, required int superLikeAmount}) async {
+    final userRef = _db.collection('users').doc(userId);
+
+    return _db.runTransaction((transaction) async {
+      final snapshot = await transaction.get(userRef);
+      if (!snapshot.exists) {
+        throw Exception("User does not exist!");
+      }
+      final user = UserModel.fromDoc(snapshot);
+
+      if (user.coins < coinCost) {
+        throw Exception("Not enough coins.");
+      }
+
+      transaction.update(userRef, {
+        'coins': FieldValue.increment(-coinCost),
+        'superLikes': FieldValue.increment(superLikeAmount),
+      });
     });
   }
 
@@ -363,13 +407,17 @@ class FirestoreService {
     }
   }
 
-  Future<QuerySnapshot> getFeedPosts(String currentUserId, {DocumentSnapshot? lastDocument}) async {
+  Future<QuerySnapshot> getFeedPosts(String currentUserId,
+      {DocumentSnapshot? lastDocument}) async {
     final userModel = await getUser(currentUserId);
     List<String> friendIds = userModel.friends;
     friendIds.add(currentUserId);
 
     if (friendIds.isEmpty) {
-      return _db.collection('posts').where('userId', isEqualTo: 'nonexistent-user').get();
+      return _db
+          .collection('posts')
+          .where('userId', isEqualTo: 'nonexistent-user')
+          .get();
     }
 
     Query query = _db
@@ -415,8 +463,11 @@ class FirestoreService {
   Future<Map<String, int>> getPostStats(String postId) async {
     final likesSnapshot =
     await _db.collection('posts').doc(postId).collection('likes').get();
-    final commentsSnapshot =
-    await _db.collection('posts').doc(postId).collection('comments').get();
+    final commentsSnapshot = await _db
+        .collection('posts')
+        .doc(postId)
+        .collection('comments')
+        .get();
     return {'likes': likesSnapshot.size, 'comments': commentsSnapshot.size};
   }
 
@@ -443,11 +494,11 @@ class FirestoreService {
       'read': false,
     };
 
-    if (type == 'friend_request_received') {
-      data['status'] = 'pending';
-    }
-
-    return _db.collection('users').doc(userId).collection('notifications').add(data);
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('notifications')
+        .add(data);
   }
 
   Stream<QuerySnapshot> getNotificationsStream(String userId) {
@@ -495,7 +546,8 @@ class FirestoreService {
   }
 
   // --- Chat Methods ---
-  Future<void> startOrGetChat(BuildContext context, String otherUserId, String otherUsername) async {
+  Future<void> startOrGetChat(
+      BuildContext context, String otherUserId, String otherUsername) async {
     final navigator = Navigator.of(context, rootNavigator: true);
     final currentUser = FirebaseAuth.instance.currentUser!;
     final ids = [currentUser.uid, otherUserId];
@@ -556,7 +608,10 @@ class FirestoreService {
 
   Future<void> updateTypingStatus(
       String chatId, String userId, bool isTyping) {
-    return _db.collection('chats').doc(chatId).update({'typingStatus.$userId': isTyping});
+    return _db
+        .collection('chats')
+        .doc(chatId)
+        .update({'typingStatus.$userId': isTyping});
   }
 
   Future<void> sendMessage({
@@ -571,24 +626,27 @@ class FirestoreService {
   }) async {
     final chatRef = _db.collection('chats').doc(chatId);
     final chatDoc = await chatRef.get();
+    if (!chatDoc.exists) return;
+
     final chatData = chatDoc.data() as Map<String, dynamic>;
     final chatType = chatData['chatType'] ?? 'friend';
 
     if (chatType == 'contact_request') {
       final initiatorId = chatData['initiatorId'];
-      final messagesFromInitiator = await chatRef.collection('messages')
-          .where('senderId', isEqualTo: initiatorId).count().get();
+      final messagesFromInitiator = await chatRef
+          .collection('messages')
+          .where('senderId', isEqualTo: initiatorId)
+          .count()
+          .get();
 
       if (senderId == initiatorId && (messagesFromInitiator.count ?? 0) >= 2) {
-        throw Exception("You cannot send more than two messages until they reply.");
+        throw Exception(
+            "You cannot send more than two messages until they reply.");
       }
 
       if (senderId != initiatorId) {
-        await acceptContactRequest(
-          chatId: chatId,
-          currentUserId: senderId,
-          requestingUserId: initiatorId,
-        );
+        throw Exception(
+            "You cannot reply until you accept the friend request.");
       }
     }
 
@@ -606,7 +664,8 @@ class FirestoreService {
       'replyToSender': replyToSender,
     });
 
-    final otherUserId = (chatData['users'] as List).firstWhere((id) => id != senderId);
+    final otherUserId =
+    (chatData['users'] as List).firstWhere((id) => id != senderId);
     await chatRef.update({
       'lastMessage': imageUrl != null ? '📷 Photo' : text,
       'lastMessageIsImage': imageUrl != null,
@@ -722,26 +781,48 @@ class FirestoreService {
   }
 
   Future<void> recordSwipe(
-      String currentUserId, String otherUserId, String action) {
-    return _db
-        .collection('users')
-        .doc(currentUserId)
-        .collection('swipes')
-        .doc(otherUserId)
-        .set({
+      String currentUserId, String otherUserId, String action) async {
+    final userRef = _db.collection('users').doc(currentUserId);
+
+    if (action == 'super_like') {
+      final user = await getUser(currentUserId);
+      if (user.superLikes < 1) {
+        throw Exception("You have no Super Likes left.");
+      }
+      await userRef.update({'superLikes': FieldValue.increment(-1)});
+    }
+
+    await userRef.collection('swipes').doc(otherUserId).set({
       'action': action,
       'timestamp': FieldValue.serverTimestamp(),
     });
+
+    if (action == 'super_like') {
+      final currentUser = await getUser(currentUserId);
+      await addNotification(
+        userId: otherUserId,
+        type: 'super_like',
+        fromUserId: currentUserId,
+        fromUsername: currentUser.username,
+        fromUserPhotoUrl: currentUser.photoUrl,
+      );
+    }
   }
 
   Future<bool> checkForMatch(String currentUserId, String otherUserId) async {
-    final otherUserSwipe = await _db
+    final otherUserSwipeDoc = await _db
         .collection('users')
         .doc(otherUserId)
         .collection('swipes')
         .doc(currentUserId)
         .get();
-    return otherUserSwipe.exists && otherUserSwipe.data()?['action'] == 'smash';
+
+    if (!otherUserSwipeDoc.exists) {
+      return false;
+    }
+
+    final otherUserAction = otherUserSwipeDoc.data()?['action'];
+    return otherUserAction == 'smash' || otherUserAction == 'super_like';
   }
 
   Future<void> createMatch(String userId1, String userId2) async {
@@ -757,7 +838,19 @@ class FirestoreService {
       },
       'lastMessage': 'You matched! Say hello.',
       'lastMessageTimestamp': FieldValue.serverTimestamp(),
+      'chatType': 'friend_chat',
     }, SetOptions(merge: true));
+
+    final batch = _db.batch();
+    final user1Ref = _db.collection('users').doc(userId1);
+    final user2Ref = _db.collection('users').doc(userId2);
+    batch.update(user1Ref, {
+      'friends': FieldValue.arrayUnion([userId2])
+    });
+    batch.update(user2Ref, {
+      'friends': FieldValue.arrayUnion([userId1])
+    });
+    await batch.commit();
   }
 
   Future<QuerySnapshot> getPaginatedUsers(

@@ -18,11 +18,16 @@ class UserModel extends Equatable {
   final List<String> interests;
   final DateTime createdAt;
 
-  // --- New, Simplified Friendship & Relationship Fields ---
+  // --- Friendship & Relationship Fields ---
   final List<String> friends;
   final List<String> friendRequestsSent;
   final List<String> friendRequestsReceived;
   final List<String> blockedUsers;
+
+  // --- NEW: Store & Inventory Fields ---
+  final int coins;
+  final int superLikes;
+  final DateTime lastFreeSuperLike;
 
   const UserModel({
     required this.id,
@@ -42,6 +47,9 @@ class UserModel extends Equatable {
     this.friendRequestsSent = const [],
     this.friendRequestsReceived = const [],
     this.blockedUsers = const [],
+    this.coins = 0,
+    this.superLikes = 1, // Start users with one Super Like
+    required this.lastFreeSuperLike,
   });
 
   // Helper to safely convert Timestamps to DateTime
@@ -52,7 +60,8 @@ class UserModel extends Equatable {
     if (timestamp is String) {
       return DateTime.tryParse(timestamp) ?? DateTime.now();
     }
-    return DateTime.now();
+    // Return a very old date as a default if null, for the free super like logic
+    return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
   /// **FIX**: This function is now backward-compatible.
@@ -90,6 +99,9 @@ class UserModel extends Equatable {
       friendRequestsSent: _getList(data, 'friendRequestsSent'),
       friendRequestsReceived: _getList(data, 'friendRequestsReceived'),
       blockedUsers: _getList(data, 'blockedUsers'),
+      coins: data['coins'] ?? 0,
+      superLikes: data['superLikes'] ?? 1,
+      lastFreeSuperLike: _toDateTime(data['lastFreeSuperLike']),
     );
   }
 
@@ -113,6 +125,9 @@ class UserModel extends Equatable {
       friendRequestsSent: _getList(data, 'friendRequestsSent'),
       friendRequestsReceived: _getList(data, 'friendRequestsReceived'),
       blockedUsers: _getList(data, 'blockedUsers'),
+      coins: data['coins'] ?? 0,
+      superLikes: data['superLikes'] ?? 1,
+      lastFreeSuperLike: _toDateTime(data['lastFreeSuperLike']),
     );
   }
 
@@ -135,13 +150,33 @@ class UserModel extends Equatable {
       'friendRequestsSent': friendRequestsSent,
       'friendRequestsReceived': friendRequestsReceived,
       'blockedUsers': blockedUsers,
+      'coins': coins,
+      'superLikes': superLikes,
+      'lastFreeSuperLike': Timestamp.fromDate(lastFreeSuperLike),
     };
   }
 
   @override
   List<Object?> get props => [
-    id, username, email, photoUrl, bio, fcmToken, presence, lastSeen,
-    country, age, gender, interests, createdAt, friends,
-    friendRequestsSent, friendRequestsReceived, blockedUsers,
+    id,
+    username,
+    email,
+    photoUrl,
+    bio,
+    fcmToken,
+    presence,
+    lastSeen,
+    country,
+    age,
+    gender,
+    interests,
+    createdAt,
+    friends,
+    friendRequestsSent,
+    friendRequestsReceived,
+    blockedUsers,
+    coins,
+    superLikes,
+    lastFreeSuperLike,
   ];
 }

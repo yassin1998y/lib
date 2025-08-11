@@ -15,8 +15,11 @@ class PostDetailScreen extends StatelessWidget {
         elevation: 1,
       ),
       body: SingleChildScrollView(
-        // Reusing the PostCard widget for a consistent UI
-        child: PostCard(post: postSnapshot),
+        // Reusing the PostCard widget and telling it this is the detail view.
+        child: PostCard(
+          post: postSnapshot,
+          isDetailView: true,
+        ),
       ),
     );
   }

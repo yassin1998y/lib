@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart';
 import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/widgets/chat_list_item_skeleton.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
@@ -54,7 +55,7 @@ class _ChatListScreenState extends State<ChatListScreen> {
             child: TextField(
               controller: _searchController,
               decoration: InputDecoration(
-                hintText: 'Search...',
+                hintText: 'Search chats or users...',
                 prefixIcon: const Icon(Icons.search),
                 filled: true,
                 fillColor: Colors.grey[200],
@@ -67,43 +68,76 @@ class _ChatListScreenState extends State<ChatListScreen> {
           ),
         ),
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: firestoreService.getChatsStream(currentUser.uid),
-        builder: (context, chatSnapshot) {
-          if (chatSnapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (chatSnapshot.hasError) {
-            return Center(child: Text('Error: ${chatSnapshot.error}'));
-          }
-          if (!chatSnapshot.hasData || chatSnapshot.data!.docs.isEmpty) {
-            return const Center(child: Text('No active chats.'));
-          }
+      body: _searchQuery.isEmpty
+          ? _buildChatList(firestoreService, currentUser.uid)
+          : _buildSearchResults(firestoreService, currentUser.uid),
+    );
+  }
 
-          var chats = chatSnapshot.data!.docs;
-
-          if (_searchQuery.isNotEmpty) {
-            chats = chats.where((chat) {
-              final chatData = chat.data() as Map<String, dynamic>;
-              final usernames = chatData['usernames'] as Map<String, dynamic>;
-              final otherUserId = (chatData['users'] as List).firstWhere((id) => id != currentUser.uid, orElse: () => '');
-              final otherUsername = usernames[otherUserId] ?? 'User';
-              return otherUsername.toLowerCase().contains(_searchQuery.toLowerCase());
-            }).toList();
-          }
-
+  Widget _buildChatList(FirestoreService firestoreService, String currentUserId) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: firestoreService.getChatsStream(currentUserId),
+      builder: (context, chatSnapshot) {
+        if (chatSnapshot.connectionState == ConnectionState.waiting) {
           return ListView.builder(
-            itemCount: chats.length,
-            itemBuilder: (context, index) {
-              final chat = chats[index];
-              return ChatListItem(
-                chat: chat,
-                currentUserId: currentUser.uid,
-              );
-            },
+            itemCount: 10,
+            itemBuilder: (context, index) => const ChatListItemSkeleton(),
           );
-        },
-      ),
+        }
+        if (chatSnapshot.hasError) {
+          return Center(child: Text('Error: ${chatSnapshot.error}'));
+        }
+        if (!chatSnapshot.hasData || chatSnapshot.data!.docs.isEmpty) {
+          return const Center(child: Text('No active chats.'));
+        }
+
+        final chats = chatSnapshot.data!.docs;
+        return ListView.builder(
+          itemCount: chats.length,
+          itemBuilder: (context, index) {
+            final chat = chats[index];
+            return ChatListItem(
+              chat: chat,
+              currentUserId: currentUserId,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildSearchResults(FirestoreService firestoreService, String currentUserId) {
+    return StreamBuilder<QuerySnapshot>(
+      stream: firestoreService.searchUsers(_searchQuery),
+      builder: (context, userSnapshot) {
+        if (userSnapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (!userSnapshot.hasData) {
+          return const Center(child: Text('No users found.'));
+        }
+
+        final users = userSnapshot.data!.docs
+            .where((doc) => doc.id != currentUserId)
+            .toList();
+
+        return ListView.builder(
+          itemCount: users.length,
+          itemBuilder: (context, index) {
+            final userDoc = users[index];
+            final user = UserModel.fromDoc(userDoc);
+            return ListTile(
+              leading: CircleAvatar(
+                backgroundImage: user.photoUrl.isNotEmpty ? NetworkImage(user.photoUrl) : null,
+                child: user.photoUrl.isEmpty ? Text(user.username.isNotEmpty ? user.username[0].toUpperCase() : '?') : null,
+              ),
+              title: Text(user.username),
+              subtitle: const Text('Tap to message'),
+              onTap: () => firestoreService.startOrGetChat(context, user.id, user.username),
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -145,7 +179,6 @@ class ChatListItem extends StatelessWidget {
     final otherUsername = usernames[otherUserId] ?? 'User';
 
     return StreamBuilder<UserModel>(
-      // FIX: Renamed getFriendshipStream to getUserStream
       stream: firestoreService.getUserStream(otherUserId),
       builder: (context, userSnapshot) {
         if (!userSnapshot.hasData) {

@@ -25,6 +25,12 @@ class FriendsLoaded extends FriendsState {
   List<Object> get props => [user];
 }
 
+/// A temporary state emitted immediately after a friend request is sent.
+/// This allows the UI to update optimistically.
+class FriendsRequestSent extends FriendsLoaded {
+  const FriendsRequestSent({required super.user});
+}
+
 /// The state when an error occurs while managing friendships.
 class FriendsError extends FriendsState {
   final String message;

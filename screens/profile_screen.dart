@@ -55,6 +55,32 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
     return 'Last seen ${timeago.format(lastSeen)}';
   }
 
+  Future<void> _confirmRemoveFriend(BuildContext context, UserModel profileUser) async {
+    final bool? shouldRemove = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Remove Friend?'),
+          content: Text('Are you sure you want to remove ${profileUser.username} as a friend?'),
+          actions: <Widget>[
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Remove', style: TextStyle(color: Colors.red)),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldRemove == true && mounted) {
+      context.read<FriendsBloc>().add(RemoveFriend(profileUser.id));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final firestoreService = context.read<FirestoreService>();
@@ -195,7 +221,7 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
                 icon: const Icon(Icons.check),
                 label: const Text('Friends'),
                 style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
-                onPressed: () => context.read<FriendsBloc>().add(RemoveFriend(profileUser.id)),
+                onPressed: () => _confirmRemoveFriend(context, profileUser),
               ),
             );
           } else if (currentUser.friendRequestsSent.contains(profileUser.id)) {
@@ -249,54 +275,62 @@ class _ProfileScreenState extends State<ProfileScreen> with SingleTickerProvider
   }
 
   Widget _buildPostsGrid(FirestoreService service, String userId) {
-    return StreamBuilder<QuerySnapshot>(
-      stream: service.getUserPostsStream(userId),
-      builder: (context, snapshot) {
-        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
-        if (snapshot.data!.docs.isEmpty) return const Center(child: Text('No posts yet.'));
-
-        final posts = snapshot.data!.docs;
-
-        return GridView.builder(
-          padding: const EdgeInsets.all(2.0),
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            crossAxisSpacing: 2,
-            mainAxisSpacing: 2,
-          ),
-          itemCount: posts.length,
-          itemBuilder: (context, index) {
-            final post = posts[index];
-            final postData = post.data() as Map<String, dynamic>;
-            final isReel = postData['postType'] == 'reel';
-
-            return GestureDetector(
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => PostDetailScreen(postSnapshot: post),
-                ));
-              },
-              child: Stack(
-                fit: StackFit.expand,
-                alignment: Alignment.center,
-                children: [
-                  Image.network(
-                    postData['imageUrl'],
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) => const Icon(Icons.error),
-                  ),
-                  if (isReel)
-                    const Positioned(
-                      top: 8,
-                      right: 8,
-                      child: Icon(Icons.play_circle_filled, color: Colors.white, size: 24),
-                    ),
-                ],
-              ),
-            );
-          },
-        );
+    return RefreshIndicator(
+      onRefresh: () async {
+        // The StreamBuilder will automatically handle refreshing the data.
+        // We just need to return a completed future.
+        setState(() {});
+        return Future.value();
       },
+      child: StreamBuilder<QuerySnapshot>(
+        stream: service.getUserPostsStream(userId),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          if (snapshot.data!.docs.isEmpty) return const Center(child: Text('No posts yet.'));
+
+          final posts = snapshot.data!.docs;
+
+          return GridView.builder(
+            padding: const EdgeInsets.all(2.0),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 3,
+              crossAxisSpacing: 2,
+              mainAxisSpacing: 2,
+            ),
+            itemCount: posts.length,
+            itemBuilder: (context, index) {
+              final post = posts[index];
+              final postData = post.data() as Map<String, dynamic>;
+              final isReel = postData['postType'] == 'reel';
+
+              return GestureDetector(
+                onTap: () {
+                  Navigator.of(context).push(MaterialPageRoute(
+                    builder: (_) => PostDetailScreen(postSnapshot: post),
+                  ));
+                },
+                child: Stack(
+                  fit: StackFit.expand,
+                  alignment: Alignment.center,
+                  children: [
+                    Image.network(
+                      postData['imageUrl'],
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => const Icon(Icons.error),
+                    ),
+                    if (isReel)
+                      const Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Icon(Icons.play_circle_filled, color: Colors.white, size: 24),
+                      ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
     );
   }
 }

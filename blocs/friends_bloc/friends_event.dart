@@ -39,17 +39,6 @@ class AcceptFriendRequest extends FriendsEvent {
   List<Object> get props => [fromUserId];
 }
 
-/// Event to accept a contact request from the chat screen.
-/// This also converts the chat to a friend_chat.
-class AcceptContactRequest extends FriendsEvent {
-  final String fromUserId;
-  final String chatId;
-  const AcceptContactRequest({required this.fromUserId, required this.chatId});
-
-  @override
-  List<Object> get props => [fromUserId, chatId];
-}
-
 /// Event to decline a friend request from another user.
 class DeclineFriendRequest extends FriendsEvent {
   final String fromUserId;

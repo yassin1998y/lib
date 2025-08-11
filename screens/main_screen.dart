@@ -13,6 +13,7 @@ import 'package:freegram/screens/match_screen.dart';
 import 'package:freegram/screens/nearby_screen.dart';
 import 'package:freegram/screens/notifications_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
+import 'package:freegram/screens/store_screen.dart'; // Import the new store screen
 import 'package:freegram/services/firestore_service.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:freegram/widgets/post_card.dart';
@@ -66,7 +67,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (authState is Authenticated) {
       if (state == AppLifecycleState.resumed) {
         _updateUserPresence(authState.user.uid, true);
-      } else if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      } else if (state == AppLifecycleState.paused ||
+          state == AppLifecycleState.inactive) {
         _updateUserPresence(authState.user.uid, false);
       }
     }
@@ -91,7 +93,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
     fcm.onTokenRefresh.listen((newToken) async {
       if (mounted) {
-        await context.read<FirestoreService>().updateUser(uid, {'fcmToken': newToken});
+        await context
+            .read<FirestoreService>()
+            .updateUser(uid, {'fcmToken': newToken});
       }
     });
   }
@@ -134,14 +138,22 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           'onPressed': () async {
             final source = await _showImageSourceActionSheet(context);
             if (source != null && mounted) {
-              Navigator.of(context).push(MaterialPageRoute(builder: (_) => CreatePostScreen(imageSource: source)));
+              Navigator.of(context).push(MaterialPageRoute(
+                  builder: (_) => CreatePostScreen(imageSource: source)));
             }
           },
         };
       case 1: // Discover
-        return {'icon': Icons.whatshot, 'onPressed': () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const MatchScreen()))};
+        return {
+          'icon': Icons.whatshot,
+          'onPressed': () => Navigator.of(context)
+              .push(MaterialPageRoute(builder: (_) => const MatchScreen()))
+        };
       case 2: // Chat
-        return {'icon': Icons.edit, 'onPressed': () {/* TODO: Implement action to start a new chat */}};
+        return {
+          'icon': Icons.edit,
+          'onPressed': () {/* TODO: Implement action to start a new chat */}
+        };
       default:
         return {'icon': Icons.add, 'onPressed': () {}};
     }
@@ -151,7 +163,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final authState = context.watch<AuthBloc>().state;
     if (authState is Authenticated) {
       return StreamBuilder<int>(
-        stream: context.read<FirestoreService>().getUnreadChatCountStream(authState.user.uid),
+        stream: context
+            .read<FirestoreService>()
+            .getUnreadChatCountStream(authState.user.uid),
         builder: (context, snapshot) {
           final totalUnread = snapshot.data ?? 0;
           return Badge(
@@ -169,7 +183,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final authState = context.watch<AuthBloc>().state;
     if (authState is Authenticated) {
       return StreamBuilder<int>(
-        stream: context.read<FirestoreService>().getUnreadNotificationCountStream(authState.user.uid),
+        stream: context
+            .read<FirestoreService>()
+            .getUnreadNotificationCountStream(authState.user.uid),
         builder: (context, snapshot) {
           final unreadCount = snapshot.data ?? 0;
           return Badge(
@@ -177,7 +193,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             isLabelVisible: unreadCount > 0,
             child: IconButton(
               icon: const Icon(Icons.notifications_none, color: Colors.black87),
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
             ),
           );
         },
@@ -185,14 +202,17 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
     return IconButton(
       icon: const Icon(Icons.notifications_none, color: Colors.black87),
-      onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
+      onPressed: () => Navigator.of(context)
+          .push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
     );
   }
 
   Widget _buildAnimatedIcon(IconData icon, int index) {
     final isSelected = _selectedIndex == index;
     return IconButton(
-      icon: Icon(icon, color: isSelected ? const Color(0xFF3498DB) : Colors.grey, size: isSelected ? 30 : 24),
+      icon: Icon(icon,
+          color: isSelected ? const Color(0xFF3498DB) : Colors.grey,
+          size: isSelected ? 30 : 24),
       onPressed: () => _onItemTapped(index),
     );
   }
@@ -205,14 +225,22 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Freegram', style: TextStyle(color: Color(0xFF3498DB), fontWeight: FontWeight.bold)),
+        title: const Text('Freegram',
+            style:
+            TextStyle(color: Color(0xFF3498DB), fontWeight: FontWeight.bold)),
         backgroundColor: Colors.white,
         elevation: 1,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.storefront_outlined, color: Colors.black87),
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const StoreScreen())),
+          ),
           if (!kIsWeb)
             IconButton(
               icon: const Icon(Icons.bluetooth_searching, color: Colors.black87),
-              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const NearbyScreen())),
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const NearbyScreen())),
             ),
           _buildActivityIconWithBadge(),
           PopupMenuButton<String>(
@@ -224,7 +252,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 }
               }
             },
-            itemBuilder: (BuildContext context) => [const PopupMenuItem<String>(value: 'logout', child: Text('Logout'))],
+            itemBuilder: (BuildContext context) => [
+              const PopupMenuItem<String>(value: 'logout', child: Text('Logout'))
+            ],
           ),
         ],
       ),
@@ -243,8 +273,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         backgroundColor: const Color(0xFF3498DB),
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 300),
-          transitionBuilder: (Widget child, Animation<double> animation) => ScaleTransition(scale: animation, child: child),
-          child: Icon(fabConfig['icon'], key: ValueKey<int>(_selectedIndex), color: Colors.white),
+          transitionBuilder: (Widget child, Animation<double> animation) =>
+              ScaleTransition(scale: animation, child: child),
+          child: Icon(fabConfig['icon'],
+              key: ValueKey<int>(_selectedIndex), color: Colors.white),
         ),
       )
           : null,
@@ -289,7 +321,9 @@ class _FeedWidgetState extends State<FeedWidget> {
     super.initState();
     _fetchFeedPosts();
     _scrollController.addListener(() {
-      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 300 && !_isFetchingMore) {
+      if (_scrollController.position.pixels >=
+          _scrollController.position.maxScrollExtent - 300 &&
+          !_isFetchingMore) {
         _fetchFeedPosts();
       }
     });

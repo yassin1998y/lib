@@ -7,19 +7,23 @@ import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
 
 class FriendsListScreen extends StatefulWidget {
-  const FriendsListScreen({super.key});
+  final int initialIndex;
+
+  const FriendsListScreen({super.key, this.initialIndex = 0});
 
   @override
   State<FriendsListScreen> createState() => _FriendsListScreenState();
 }
 
-class _FriendsListScreenState extends State<FriendsListScreen> with SingleTickerProviderStateMixin {
+class _FriendsListScreenState extends State<FriendsListScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(
+        length: 3, vsync: this, initialIndex: widget.initialIndex);
   }
 
   @override
@@ -159,7 +163,8 @@ class UserListTile extends StatelessWidget {
         if (snapshot.hasError) {
           return const ListTile(
             leading: CircleAvatar(backgroundColor: Colors.red),
-            title: Text('Error loading user', style: TextStyle(color: Colors.red)),
+            title:
+            Text('Error loading user', style: TextStyle(color: Colors.red)),
           );
         }
 
@@ -168,15 +173,19 @@ class UserListTile extends StatelessWidget {
 
         return ListTile(
           leading: CircleAvatar(
-            backgroundImage: (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
+            backgroundImage:
+            (photoUrl.isNotEmpty) ? NetworkImage(photoUrl) : null,
             child: (photoUrl.isEmpty)
-                ? Text(user.username.isNotEmpty ? user.username[0].toUpperCase() : '?')
+                ? Text(user.username.isNotEmpty
+                ? user.username[0].toUpperCase()
+                : '?')
                 : null,
           ),
           title: Text(user.username),
           trailing: trailing,
           onTap: () {
-            Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId)));
+            Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId)));
           },
         );
       },
