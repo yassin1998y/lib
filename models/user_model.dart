@@ -2,7 +2,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:equatable/equatable.dart';
 
 /// A type-safe, predictable model for representing user data across the app.
-/// This model simplifies the data structure and provides robust type safety.
 class UserModel extends Equatable {
   final String id;
   final String username;
@@ -24,10 +23,20 @@ class UserModel extends Equatable {
   final List<String> friendRequestsReceived;
   final List<String> blockedUsers;
 
-  // --- NEW: Store & Inventory Fields ---
+  // --- Store & Inventory Fields ---
   final int coins;
   final int superLikes;
   final DateTime lastFreeSuperLike;
+
+  // --- Lifetime Level & XP Fields ---
+  final int xp;
+  final int level;
+
+  // --- NEW: Seasonal Pass Fields ---
+  final String currentSeasonId;
+  final int seasonXp;
+  final int seasonLevel;
+  final List<int> claimedSeasonRewards; // List of claimed reward levels
 
   const UserModel({
     required this.id,
@@ -48,11 +57,16 @@ class UserModel extends Equatable {
     this.friendRequestsReceived = const [],
     this.blockedUsers = const [],
     this.coins = 0,
-    this.superLikes = 1, // Start users with one Super Like
+    this.superLikes = 1,
     required this.lastFreeSuperLike,
+    this.xp = 0,
+    this.level = 1,
+    this.currentSeasonId = '',
+    this.seasonXp = 0,
+    this.seasonLevel = 0,
+    this.claimedSeasonRewards = const [],
   });
 
-  // Helper to safely convert Timestamps to DateTime
   static DateTime _toDateTime(dynamic timestamp) {
     if (timestamp is Timestamp) {
       return timestamp.toDate();
@@ -60,22 +74,27 @@ class UserModel extends Equatable {
     if (timestamp is String) {
       return DateTime.tryParse(timestamp) ?? DateTime.now();
     }
-    // Return a very old date as a default if null, for the free super like logic
     return DateTime.fromMillisecondsSinceEpoch(0);
   }
 
-  /// **FIX**: This function is now backward-compatible.
-  /// It can handle the old data structure (Map) and the new one (List).
   static List<String> _getList(Map<String, dynamic> data, String key) {
     final value = data[key];
     if (value is List) {
       return List<String>.from(value);
     }
-    // If the data is in the old Map format, get the keys and convert to a list.
     if (value is Map) {
       return value.keys.toList().cast<String>();
     }
-    return []; // Default to an empty list if null or another type.
+    return [];
+  }
+
+  // Helper to safely convert a list of dynamics (from Firestore) to a list of ints.
+  static List<int> _getIntList(Map<String, dynamic> data, String key) {
+    final value = data[key];
+    if (value is List) {
+      return List<int>.from(value);
+    }
+    return [];
   }
 
   /// Creates a `UserModel` instance from a Firestore `DocumentSnapshot`.
@@ -102,6 +121,12 @@ class UserModel extends Equatable {
       coins: data['coins'] ?? 0,
       superLikes: data['superLikes'] ?? 1,
       lastFreeSuperLike: _toDateTime(data['lastFreeSuperLike']),
+      xp: data['xp'] ?? 0,
+      level: data['level'] ?? 1,
+      currentSeasonId: data['currentSeasonId'] ?? '',
+      seasonXp: data['seasonXp'] ?? 0,
+      seasonLevel: data['seasonLevel'] ?? 0,
+      claimedSeasonRewards: _getIntList(data, 'claimedSeasonRewards'),
     );
   }
 
@@ -128,6 +153,12 @@ class UserModel extends Equatable {
       coins: data['coins'] ?? 0,
       superLikes: data['superLikes'] ?? 1,
       lastFreeSuperLike: _toDateTime(data['lastFreeSuperLike']),
+      xp: data['xp'] ?? 0,
+      level: data['level'] ?? 1,
+      currentSeasonId: data['currentSeasonId'] ?? '',
+      seasonXp: data['seasonXp'] ?? 0,
+      seasonLevel: data['seasonLevel'] ?? 0,
+      claimedSeasonRewards: _getIntList(data, 'claimedSeasonRewards'),
     );
   }
 
@@ -153,6 +184,12 @@ class UserModel extends Equatable {
       'coins': coins,
       'superLikes': superLikes,
       'lastFreeSuperLike': Timestamp.fromDate(lastFreeSuperLike),
+      'xp': xp,
+      'level': level,
+      'currentSeasonId': currentSeasonId,
+      'seasonXp': seasonXp,
+      'seasonLevel': seasonLevel,
+      'claimedSeasonRewards': claimedSeasonRewards,
     };
   }
 
@@ -178,5 +215,11 @@ class UserModel extends Equatable {
     coins,
     superLikes,
     lastFreeSuperLike,
+    xp,
+    level,
+    currentSeasonId,
+    seasonXp,
+    seasonLevel,
+    claimedSeasonRewards,
   ];
 }

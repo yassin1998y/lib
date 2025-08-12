@@ -2,15 +2,18 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart' as rtdb;
 import 'package:flutter/material.dart';
-import 'package:freegram/models/user_model.dart'; // Import the new UserModel
+import 'package:freegram/models/daily_task.dart';
+import 'package:freegram/models/season_model.dart';
+import 'package:freegram/models/season_pass_reward.dart';
+import 'package:freegram/models/task_progress.dart';
+import 'package:freegram/models/user_model.dart';
 import 'package:freegram/screens/chat_screen.dart';
 import 'package:freegram/screens/friends_list_screen.dart';
+import 'package:freegram/screens/level_pass_screen.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:flutter_facebook_auth/flutter_facebook_auth.dart';
 
 /// A centralized service for all Firestore and Firebase operations.
-/// This refactored version uses the type-safe `UserModel` for all user-related
-/// operations, ensuring data consistency and preventing runtime errors.
 class FirestoreService {
   final FirebaseFirestore _db = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -37,7 +40,6 @@ class FirestoreService {
     if (user != null) {
       final userDoc = await _db.collection('users').doc(user.uid).get();
       if (!userDoc.exists) {
-        // Create a new user with the simplified, consistent data model.
         await createUser(
           uid: user.uid,
           username: user.displayName ?? 'Google User',
@@ -93,9 +95,8 @@ class FirestoreService {
     await _auth.signOut();
   }
 
-  // --- User & Friend Methods (Refactored for Type Safety and Simplicity) ---
+  // --- User & Friend Methods ---
 
-  /// Creates a new user document in Firestore using the `UserModel`.
   Future<void> createUser({
     required String uid,
     required String username,
@@ -114,7 +115,6 @@ class FirestoreService {
     return _db.collection('users').doc(uid).set(newUser.toMap());
   }
 
-  /// Fetches a user document and returns it as a type-safe `UserModel`.
   Future<UserModel> getUser(String uid) async {
     final doc = await _db.collection('users').doc(uid).get();
     if (!doc.exists) {
@@ -123,7 +123,6 @@ class FirestoreService {
     return UserModel.fromDoc(doc);
   }
 
-  /// Returns a stream of a user document, converted to a `UserModel`.
   Stream<UserModel> getUserStream(String userId) {
     return _db
         .collection('users')
@@ -132,7 +131,6 @@ class FirestoreService {
         .map((doc) => UserModel.fromDoc(doc));
   }
 
-  /// Updates a user document with raw data. Used for profile edits.
   Future<void> updateUser(String uid, Map<String, dynamic> data) {
     return _db.collection('users').doc(uid).update(data);
   }
@@ -151,7 +149,6 @@ class FirestoreService {
     });
   }
 
-  /// Sends a friend request and a notification to the recipient.
   Future<void> sendFriendRequest(String fromUserId, String toUserId) async {
     final batch = _db.batch();
     final fromUserRef = _db.collection('users').doc(fromUserId);
@@ -166,7 +163,6 @@ class FirestoreService {
 
     await batch.commit();
 
-    // After committing, send a notification.
     final fromUser = await getUser(fromUserId);
     await addNotification(
       userId: toUserId,
@@ -177,15 +173,12 @@ class FirestoreService {
     );
   }
 
-  /// Accepts a friend request, notifies the original sender, and converts any
-  /// existing 'contact_request' chat into a 'friend_chat'.
   Future<void> acceptFriendRequest(
       String currentUserId, String requestingUserId) async {
     final batch = _db.batch();
     final currentUserRef = _db.collection('users').doc(currentUserId);
     final requestingUserRef = _db.collection('users').doc(requestingUserId);
 
-    // Update friend lists for both users
     batch.update(currentUserRef, {
       'friendRequestsReceived': FieldValue.arrayRemove([requestingUserId]),
       'friends': FieldValue.arrayUnion([requestingUserId])
@@ -195,7 +188,6 @@ class FirestoreService {
       'friends': FieldValue.arrayUnion([currentUserId])
     });
 
-    // Convert the chat type if a contact_request chat exists
     final ids = [currentUserId, requestingUserId]..sort();
     final chatId = ids.join('_');
     final chatRef = _db.collection('chats').doc(chatId);
@@ -203,7 +195,9 @@ class FirestoreService {
 
     await batch.commit();
 
-    // After committing, send a notification back to the original sender.
+    await addXp(currentUserId, 50, isSeasonal: true);
+    await addXp(requestingUserId, 50, isSeasonal: true);
+
     final currentUser = await getUser(currentUserId);
     await addNotification(
       userId: requestingUserId,
@@ -214,14 +208,12 @@ class FirestoreService {
     );
   }
 
-  /// Declines a friend request and deletes the associated contact_request chat.
   Future<void> declineFriendRequest(
       String currentUserId, String requestingUserId) async {
     final batch = _db.batch();
     final currentUserRef = _db.collection('users').doc(currentUserId);
     final requestingUserRef = _db.collection('users').doc(requestingUserId);
 
-    // Remove friend request from both users' documents
     batch.update(currentUserRef, {
       'friendRequestsReceived': FieldValue.arrayRemove([requestingUserId])
     });
@@ -229,7 +221,6 @@ class FirestoreService {
       'friendRequestsSent': FieldValue.arrayRemove([currentUserId])
     });
 
-    // Find and delete the corresponding 'contact_request' chat
     final ids = [currentUserId, requestingUserId]..sort();
     final chatId = ids.join('_');
     final chatRef = _db.collection('chats').doc(chatId);
@@ -238,7 +229,6 @@ class FirestoreService {
     await batch.commit();
   }
 
-  /// Removes a friend. Atomically updates both users' documents.
   Future<void> removeFriend(String currentUserId, String friendId) async {
     final batch = _db.batch();
     final currentUserRef = _db.collection('users').doc(currentUserId);
@@ -254,23 +244,16 @@ class FirestoreService {
     await batch.commit();
   }
 
-  /// Blocks a user, ensuring they are removed as a friend and any chat is deleted.
   Future<void> blockUser(String currentUserId, String userToBlockId) async {
-    // First, ensure the friendship is removed.
     await removeFriend(currentUserId, userToBlockId);
-
-    // Then, add the user to the block list.
     await _db.collection('users').doc(currentUserId).update({
       'blockedUsers': FieldValue.arrayUnion([userToBlockId])
     });
-
-    // Finally, delete any chat between them.
     final ids = [currentUserId, userToBlockId]..sort();
     final chatId = ids.join('_');
     await deleteChat(chatId);
   }
 
-  /// Unblocks a user.
   Future<void> unblockUser(String currentUserId, String userToUnblockId) {
     return _db.collection('users').doc(currentUserId).update({
       'blockedUsers': FieldValue.arrayRemove([userToUnblockId])
@@ -279,14 +262,12 @@ class FirestoreService {
 
   // --- Store & Reward Methods ---
 
-  /// Grants a reward to a user after they watch an ad.
   Future<void> grantAdReward(String userId) {
     return _db.collection('users').doc(userId).update({
       'superLikes': FieldValue.increment(1),
     });
   }
 
-  /// Purchases an item from the store using in-app coins.
   Future<void> purchaseWithCoins(String userId,
       {required int coinCost, required int superLikeAmount}) async {
     final userRef = _db.collection('users').doc(userId);
@@ -316,8 +297,8 @@ class FirestoreService {
     required String caption,
     required String imageUrl,
     required String postType,
-  }) {
-    return _db.collection('posts').add({
+  }) async {
+    await _db.collection('posts').add({
       'userId': userId,
       'username': username,
       'caption': caption,
@@ -325,6 +306,8 @@ class FirestoreService {
       'postType': postType,
       'timestamp': FieldValue.serverTimestamp(),
     });
+    await addXp(userId, 25, isSeasonal: true);
+    await updateTaskProgress(userId, 'create_post', 1);
   }
 
   Future<void> deletePost(String postId) async {
@@ -361,6 +344,7 @@ class FirestoreService {
     } else {
       await likeRef.set({'userId': userId});
       if (postOwnerId != userId) {
+        await addXp(postOwnerId, 5, isSeasonal: true);
         await addNotification(
           userId: postOwnerId,
           type: 'like',
@@ -371,6 +355,7 @@ class FirestoreService {
           postImageUrl: postImageUrl,
         );
       }
+      await updateTaskProgress(userId, 'like_posts', 1);
     }
   }
 
@@ -394,6 +379,7 @@ class FirestoreService {
     });
 
     if (postData['userId'] != userId) {
+      await addXp(postData['userId'], 10, isSeasonal: true);
       await addNotification(
         userId: postData['userId'],
         type: 'comment',
@@ -672,6 +658,9 @@ class FirestoreService {
       'lastMessageTimestamp': FieldValue.serverTimestamp(),
       'unreadCount.$otherUserId': FieldValue.increment(1),
     });
+
+    await addXp(senderId, 2, isSeasonal: true);
+    await updateTaskProgress(senderId, 'send_messages', 1);
   }
 
   Future<void> editMessage(String chatId, String messageId, String newText) {
@@ -851,6 +840,9 @@ class FirestoreService {
       'friends': FieldValue.arrayUnion([userId1])
     });
     await batch.commit();
+
+    await addXp(userId1, 100, isSeasonal: true);
+    await addXp(userId2, 100, isSeasonal: true);
   }
 
   Future<QuerySnapshot> getPaginatedUsers(
@@ -865,12 +857,42 @@ class FirestoreService {
   Future<List<DocumentSnapshot>> getRecommendedUsers(
       List<String> interests, String currentUserId) async {
     if (interests.isEmpty) return [];
+
     final querySnapshot = await _db
         .collection('users')
         .where('interests', arrayContainsAny: interests)
-        .limit(30)
+        .limit(50)
         .get();
-    return querySnapshot.docs.where((doc) => doc.id != currentUserId).toList();
+
+    final candidates = querySnapshot.docs
+        .where((doc) => doc.id != currentUserId)
+        .map((doc) => UserModel.fromDoc(doc))
+        .toList();
+
+    candidates.sort((a, b) {
+      final levelComparison = b.level.compareTo(a.level);
+      if (levelComparison != 0) {
+        return levelComparison;
+      }
+
+      final aSharedInterests =
+          a.interests.where((i) => interests.contains(i)).length;
+      final bSharedInterests =
+          b.interests.where((i) => interests.contains(i)).length;
+      return bSharedInterests.compareTo(aSharedInterests);
+    });
+
+    final sortedIds = candidates.map((u) => u.id).toList();
+    final originalDocs =
+    querySnapshot.docs.where((doc) => doc.id != currentUserId).toList();
+
+    originalDocs.sort((a, b) {
+      final aIndex = sortedIds.indexOf(a.id);
+      final bIndex = sortedIds.indexOf(b.id);
+      return aIndex.compareTo(bIndex);
+    });
+
+    return originalDocs.take(30).toList();
   }
 
   Stream<QuerySnapshot> searchUsers(String query) {
@@ -886,5 +908,208 @@ class FirestoreService {
         .collection('users')
         .doc(userId)
         .update({'nearbyContacts': FieldValue.arrayUnion(contactIds)});
+  }
+
+  // --- XP & Level Methods ---
+
+  /// Adds XP to a user's lifetime and seasonal totals.
+  Future<void> addXp(String userId, int amount, {bool isSeasonal = false}) async {
+    final userRef = _db.collection('users').doc(userId);
+
+    return _db.runTransaction((transaction) async {
+      final snapshot = await transaction.get(userRef);
+      if (!snapshot.exists) throw Exception("User does not exist!");
+
+      final user = UserModel.fromDoc(snapshot);
+      Map<String, dynamic> updates = {};
+
+      // --- Lifetime XP and Level ---
+      final newXp = user.xp + amount;
+      final newLevel = 1 + (newXp ~/ 1000);
+      updates['xp'] = newXp;
+      if (newLevel > user.level) {
+        updates['level'] = newLevel;
+      }
+
+      // --- Seasonal XP and Level ---
+      if (isSeasonal) {
+        final newSeasonXp = user.seasonXp + amount;
+        final newSeasonLevel = 1 + (newSeasonXp ~/ 500); // Seasons level up faster
+        updates['seasonXp'] = newSeasonXp;
+        if (newSeasonLevel > user.seasonLevel) {
+          updates['seasonLevel'] = newSeasonLevel;
+        }
+      }
+
+      transaction.update(userRef, updates);
+    });
+  }
+
+  // --- Daily Task Methods ---
+
+  Future<List<DailyTask>> getDailyTasks() async {
+    final snapshot = await _db.collection('daily_tasks').get();
+    return snapshot.docs.map((doc) => DailyTask.fromDoc(doc)).toList();
+  }
+
+  Stream<QuerySnapshot> getUserTaskProgressStream(String userId) {
+    return _db
+        .collection('users')
+        .doc(userId)
+        .collection('task_progress')
+        .snapshots();
+  }
+
+  Future<void> updateTaskProgress(
+      String userId, String taskId, int increment) async {
+    final taskRef =
+    _db.collection('users').doc(userId).collection('task_progress').doc(taskId);
+    final taskDefDoc = await _db.collection('daily_tasks').doc(taskId).get();
+
+    if (!taskDefDoc.exists) {
+      debugPrint("Task definition for $taskId not found.");
+      return;
+    }
+    final taskDef = DailyTask.fromDoc(taskDefDoc);
+
+    return _db.runTransaction((transaction) async {
+      final progressDoc = await transaction.get(taskRef);
+      TaskProgress progress;
+
+      if (!progressDoc.exists) {
+        progress = TaskProgress(
+            taskId: taskId,
+            progress: 0,
+            isCompleted: false,
+            lastUpdated: DateTime.now());
+      } else {
+        progress = TaskProgress.fromDoc(progressDoc);
+      }
+
+      final now = DateTime.now();
+      final lastUpdate = progress.lastUpdated;
+      if (now.year > lastUpdate.year ||
+          now.month > lastUpdate.month ||
+          now.day > lastUpdate.day) {
+        progress = TaskProgress(
+            taskId: taskId,
+            progress: 0,
+            isCompleted: false,
+            lastUpdated: now);
+      }
+
+      if (progress.isCompleted) {
+        return;
+      }
+
+      final newProgressCount = progress.progress + increment;
+
+      if (newProgressCount >= taskDef.requiredCount) {
+        final updatedProgress = TaskProgress(
+          taskId: taskId,
+          progress: newProgressCount,
+          isCompleted: true,
+          lastUpdated: now,
+        );
+        transaction.set(taskRef, updatedProgress.toMap());
+
+        await addXp(userId, taskDef.xpReward, isSeasonal: true);
+        final userRef = _db.collection('users').doc(userId);
+        transaction
+            .update(userRef, {'coins': FieldValue.increment(taskDef.coinReward)});
+      } else {
+        final updatedProgress = TaskProgress(
+          taskId: taskId,
+          progress: newProgressCount,
+          isCompleted: false,
+          lastUpdated: now,
+        );
+        transaction.set(taskRef, updatedProgress.toMap());
+      }
+    });
+  }
+
+  // --- NEW: Seasonal Pass Methods ---
+
+  /// Fetches the currently active season.
+  Future<Season?> getCurrentSeason() async {
+    final now = DateTime.now();
+    final snapshot = await _db
+        .collection('seasons')
+        .where('startDate', isLessThanOrEqualTo: now)
+        .orderBy('startDate', descending: true)
+        .limit(1)
+        .get();
+
+    if (snapshot.docs.isEmpty) return null;
+    final season = Season.fromDoc(snapshot.docs.first);
+
+    // Check if the found season has already ended
+    if (now.isAfter(season.endDate)) return null;
+
+    return season;
+  }
+
+  /// Fetches the rewards for a specific season.
+  Future<List<SeasonPassReward>> getRewardsForSeason(String seasonId) async {
+    final snapshot = await _db
+        .collection('seasons')
+        .doc(seasonId)
+        .collection('rewards')
+        .orderBy('level')
+        .get();
+    return snapshot.docs.map((doc) => SeasonPassReward.fromDoc(doc)).toList();
+  }
+
+  /// Checks if a user needs to be reset for a new season and performs the reset.
+  Future<void> checkAndResetSeason(String userId, Season currentSeason) async {
+    final userRef = _db.collection('users').doc(userId);
+    final user = await getUser(userId);
+
+    if (user.currentSeasonId != currentSeason.id) {
+      // New season! Reset the user's seasonal progress.
+      await userRef.update({
+        'currentSeasonId': currentSeason.id,
+        'seasonXp': 0,
+        'seasonLevel': 0,
+        'claimedSeasonRewards': [],
+      });
+    }
+  }
+
+  /// Claims a specific reward from the seasonal pass for a user.
+  Future<void> claimSeasonReward(String userId, SeasonPassReward reward) async {
+    final userRef = _db.collection('users').doc(userId);
+
+    return _db.runTransaction((transaction) async {
+      final snapshot = await transaction.get(userRef);
+      if (!snapshot.exists) throw Exception("User does not exist!");
+
+      final user = UserModel.fromDoc(snapshot);
+
+      if (user.seasonLevel < reward.level) {
+        throw Exception("You have not reached the required level yet.");
+      }
+      if (user.claimedSeasonRewards.contains(reward.level)) {
+        throw Exception("You have already claimed this reward.");
+      }
+
+      Map<String, dynamic> updates = {
+        'claimedSeasonRewards': FieldValue.arrayUnion([reward.level])
+      };
+
+      switch (reward.type) {
+        case RewardType.coins:
+          updates['coins'] = FieldValue.increment(reward.amount);
+          break;
+        case RewardType.superLikes:
+          updates['superLikes'] = FieldValue.increment(reward.amount);
+          break;
+        default:
+          break;
+      }
+
+      transaction.update(userRef, updates);
+    });
   }
 }
