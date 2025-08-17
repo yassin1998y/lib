@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/chat_repository.dart';
 import 'package:provider/provider.dart';
 
 class MatchAnimationScreen extends StatefulWidget {
@@ -65,7 +65,7 @@ class _MatchAnimationScreenState extends State<MatchAnimationScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.black.withOpacity(0.85),
+      backgroundColor: Colors.black.withAlpha(215),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -98,7 +98,7 @@ class _MatchAnimationScreenState extends State<MatchAnimationScreen>
                   shadows: [
                     Shadow(
                       blurRadius: 15.0,
-                      color: Colors.pinkAccent.withOpacity(0.7),
+                      color: Colors.pinkAccent.withAlpha(178),
                     ),
                   ],
                 ),
@@ -122,9 +122,8 @@ class _MatchAnimationScreenState extends State<MatchAnimationScreen>
                   children: [
                     ElevatedButton(
                       onPressed: () {
-                        // Pop this screen and then navigate to the chat
                         Navigator.of(context).pop();
-                        context.read<FirestoreService>().startOrGetChat(
+                        context.read<ChatRepository>().startOrGetChat(
                           context,
                           widget.matchedUser.id,
                           widget.matchedUser.username,

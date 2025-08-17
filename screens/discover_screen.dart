@@ -1,14 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:country_picker/country_picker.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/repositories/chat_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/edit_profile_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
-import 'package:freegram/services/firestore_service.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:provider/provider.dart';
 import 'package:shimmer/shimmer.dart';
 
 const List<String> _possibleInterests = [
@@ -23,7 +24,8 @@ class DiscoverScreen extends StatefulWidget {
   State<DiscoverScreen> createState() => _DiscoverScreenState();
 }
 
-class _DiscoverScreenState extends State<DiscoverScreen> with SingleTickerProviderStateMixin {
+class _DiscoverScreenState extends State<DiscoverScreen>
+    with SingleTickerProviderStateMixin {
   late TabController _tabController;
 
   @override
@@ -69,7 +71,7 @@ class ExploreTab extends StatefulWidget {
 
 class _ExploreTabState extends State<ExploreTab> {
   final _scrollController = ScrollController();
-  List<DocumentSnapshot> _allUserDocs = []; // Keep original docs for pagination
+  List<DocumentSnapshot> _allUserDocs = [];
   List<UserModel> _filteredUsers = [];
   bool _isLoading = false;
   bool _isFetchingMore = false;
@@ -81,17 +83,17 @@ class _ExploreTabState extends State<ExploreTab> {
   String? _selectedCountry;
   RangeValues _ageRange = const RangeValues(18, 80);
   String _genderFilter = 'All';
-  List<String> _selectedInterests = [];
+  final List<String> _selectedInterests = [];
   bool _showNearbyOnly = false;
-
-  final List<String> _countries = ['All', 'USA', 'Canada', 'UK', 'Germany', 'France', 'Tunisia', 'Egypt', 'Algeria', 'Morocco'];
 
   @override
   void initState() {
     super.initState();
     _getUsers();
     _scrollController.addListener(() {
-      if (_scrollController.position.pixels >= _scrollController.position.maxScrollExtent - 300 && !_isFetchingMore) {
+      if (_scrollController.position.pixels >=
+          _scrollController.position.maxScrollExtent - 300 &&
+          !_isFetchingMore) {
         _getUsers();
       }
     });
@@ -119,7 +121,8 @@ class _ExploreTabState extends State<ExploreTab> {
     });
 
     try {
-      final querySnapshot = await context.read<FirestoreService>().getPaginatedUsers(
+      final querySnapshot =
+      await context.read<UserRepository>().getPaginatedUsers(
         limit: _documentLimit,
         lastDocument: _lastDocument,
       );
@@ -134,7 +137,12 @@ class _ExploreTabState extends State<ExploreTab> {
       debugPrint("Error fetching users: $e");
     }
 
-    if (mounted) setState(() { _isFetchingMore = false; _isLoading = false; });
+    if (mounted) {
+      setState(() {
+        _isFetchingMore = false;
+        _isLoading = false;
+      });
+    }
   }
 
   Future<void> _getNearbyUsers() async {
@@ -147,10 +155,11 @@ class _ExploreTabState extends State<ExploreTab> {
     for (var key in nearbyBox.keys) {
       final profileData = profileBox.get(key);
       if (profileData != null) {
-        nearbyUsers.add(UserModel.fromMap(key, Map<String, dynamic>.from(profileData)));
+        nearbyUsers
+            .add(UserModel.fromMap(key, Map<String, dynamic>.from(profileData)));
       } else {
         try {
-          final userModel = await context.read<FirestoreService>().getUser(key);
+          final userModel = await context.read<UserRepository>().getUser(key);
           profileBox.put(key, userModel.toMap());
           nearbyUsers.add(userModel);
         } catch (e) {
@@ -172,11 +181,19 @@ class _ExploreTabState extends State<ExploreTab> {
 
     tempFiltered = tempFiltered.where((user) {
       if (user.id == currentUserId) return false;
-      if (_searchQuery.isNotEmpty && !user.username.toLowerCase().contains(_searchQuery.toLowerCase())) return false;
-      if (_selectedCountry != null && _selectedCountry != 'All' && user.country != _selectedCountry) return false;
+      if (_searchQuery.isNotEmpty &&
+          !user.username.toLowerCase().contains(_searchQuery.toLowerCase())) {
+        return false;
+      }
+      if (_selectedCountry != null &&
+          _selectedCountry != 'All' &&
+          user.country != _selectedCountry) return false;
       if (user.age < _ageRange.start || user.age > _ageRange.end) return false;
       if (_genderFilter != 'All' && user.gender != _genderFilter) return false;
-      if (_selectedInterests.isNotEmpty && !_selectedInterests.any((interest) => user.interests.contains(interest))) return false;
+      if (_selectedInterests.isNotEmpty &&
+          !_selectedInterests.any((interest) => user.interests.contains(interest))) {
+        return false;
+      }
       return true;
     }).toList();
 
@@ -214,23 +231,47 @@ class _ExploreTabState extends State<ExploreTab> {
                   children: [
                     Text('Filters', style: Theme.of(context).textTheme.titleLarge),
                     const SizedBox(height: 16),
-                    SwitchListTile(title: const Text('Show only nearby users'), value: _showNearbyOnly, onChanged: (val) => setModalState(() => _showNearbyOnly = val)),
+                    SwitchListTile(
+                        title: const Text('Show only nearby users'),
+                        value: _showNearbyOnly,
+                        onChanged: (val) =>
+                            setModalState(() => _showNearbyOnly = val)),
                     const Divider(),
-                    DropdownButtonFormField<String>(
-                      value: _selectedCountry ?? 'All',
-                      decoration: const InputDecoration(labelText: 'Country', border: OutlineInputBorder()),
-                      items: _countries.map((String value) => DropdownMenuItem<String>(value: value, child: Text(value))).toList(),
-                      onChanged: (newValue) => setModalState(() => _selectedCountry = newValue == 'All' ? null : newValue),
+                    InkWell(
+                      onTap: () {
+                        showCountryPicker(
+                          context: context,
+                          showPhoneCode: false,
+                          onSelect: (Country country) {
+                            setModalState(() {
+                              _selectedCountry = country.name;
+                            });
+                          },
+                        );
+                      },
+                      child: InputDecorator(
+                        decoration: const InputDecoration(
+                          labelText: 'Country',
+                          border: OutlineInputBorder(),
+                        ),
+                        child: Text(_selectedCountry ?? 'All Countries'),
+                      ),
                     ),
                     const SizedBox(height: 16),
                     Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Age Range: ${_ageRange.start.round()} - ${_ageRange.end.round()}'),
+                        Text(
+                            'Age Range: ${_ageRange.start.round()} - ${_ageRange.end.round()}'),
                         RangeSlider(
-                          values: _ageRange, min: 13, max: 100, divisions: 87,
-                          labels: RangeLabels(_ageRange.start.round().toString(), _ageRange.end.round().toString()),
-                          onChanged: (RangeValues values) => setModalState(() => _ageRange = values),
+                          values: _ageRange,
+                          min: 13,
+                          max: 100,
+                          divisions: 87,
+                          labels: RangeLabels(_ageRange.start.round().toString(),
+                              _ageRange.end.round().toString()),
+                          onChanged: (RangeValues values) =>
+                              setModalState(() => _ageRange = values),
                         ),
                       ],
                     ),
@@ -238,21 +279,31 @@ class _ExploreTabState extends State<ExploreTab> {
                     const Text('Gender'),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
-                      children: ['All', 'Male', 'Female'].map((gender) => ChoiceChip(
+                      children: ['All', 'Male', 'Female']
+                          .map((gender) => ChoiceChip(
                         label: Text(gender),
                         selected: _genderFilter == gender,
-                        onSelected: (selected) { if (selected) setModalState(() => _genderFilter = gender); },
-                      )).toList(),
+                        onSelected: (selected) {
+                          if (selected) {
+                            setModalState(() => _genderFilter = gender);
+                          }
+                        },
+                      ))
+                          .toList(),
                     ),
                     const SizedBox(height: 16),
                     const Text('Interests'),
                     Wrap(
-                      spacing: 8.0, runSpacing: 4.0,
+                      spacing: 8.0,
+                      runSpacing: 4.0,
                       children: _possibleInterests.map((interest) {
                         final isSelected = _selectedInterests.contains(interest);
                         return FilterChip(
-                          label: Text(interest), selected: isSelected,
-                          onSelected: (selected) => setModalState(() => selected ? _selectedInterests.add(interest) : _selectedInterests.remove(interest)),
+                          label: Text(interest),
+                          selected: isSelected,
+                          onSelected: (selected) => setModalState(() => selected
+                              ? _selectedInterests.add(interest)
+                              : _selectedInterests.remove(interest)),
                         );
                       }).toList(),
                     ),
@@ -261,7 +312,10 @@ class _ExploreTabState extends State<ExploreTab> {
                       width: double.infinity,
                       child: ElevatedButton(
                         child: const Text('Apply Filters'),
-                        onPressed: () { _onFilterChanged(); Navigator.pop(context); },
+                        onPressed: () {
+                          _onFilterChanged();
+                          Navigator.pop(context);
+                        },
                       ),
                     ),
                   ],
@@ -284,11 +338,20 @@ class _ExploreTabState extends State<ExploreTab> {
             children: [
               Expanded(
                 child: TextField(
-                  decoration: InputDecoration(hintText: 'Search by username...', prefixIcon: const Icon(Icons.search), border: OutlineInputBorder(borderRadius: BorderRadius.circular(12))),
-                  onChanged: (value) { _searchQuery = value; _applyFilters(); },
+                  decoration: InputDecoration(
+                      hintText: 'Search by username...',
+                      prefixIcon: const Icon(Icons.search),
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12))),
+                  onChanged: (value) {
+                    _searchQuery = value;
+                    _applyFilters();
+                  },
                 ),
               ),
-              IconButton(icon: const Icon(Icons.filter_list), onPressed: _showFilterSheet),
+              IconButton(
+                  icon: const Icon(Icons.filter_list),
+                  onPressed: _showFilterSheet),
             ],
           ),
         ),
@@ -298,13 +361,24 @@ class _ExploreTabState extends State<ExploreTab> {
               : RefreshIndicator(
             onRefresh: () => _getUsers(isRefresh: true),
             child: _filteredUsers.isEmpty
-                ? const Center(child: Text("No users found. Try adjusting your filters."))
+                ? const Center(
+                child: Text(
+                    "No users found. Try adjusting your filters."))
                 : GridView.builder(
               controller: _scrollController,
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 5, childAspectRatio: 0.8, crossAxisSpacing: 2, mainAxisSpacing: 2),
-              itemCount: _filteredUsers.length + (_hasMore && !_showNearbyOnly ? 1 : 0),
+              gridDelegate:
+              const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 5,
+                  childAspectRatio: 0.8,
+                  crossAxisSpacing: 2,
+                  mainAxisSpacing: 2),
+              itemCount:
+              _filteredUsers.length + (_hasMore && !_showNearbyOnly ? 1 : 0),
               itemBuilder: (context, index) {
-                if (index == _filteredUsers.length) return const Center(child: CircularProgressIndicator());
+                if (index == _filteredUsers.length) {
+                  return const Center(
+                      child: CircularProgressIndicator());
+                }
                 final user = _filteredUsers[index];
                 return CompactUserCard(user: user);
               },
@@ -337,7 +411,7 @@ class _ForYouTabState extends State<ForYouTab> {
     setState(() => _isLoading = true);
     final currentUser = FirebaseAuth.instance.currentUser!;
     try {
-      final user = await context.read<FirestoreService>().getUser(currentUser.uid);
+      final user = await context.read<UserRepository>().getUser(currentUser.uid);
       final List<String> myInterests = user.interests;
 
       if (myInterests.isEmpty) {
@@ -345,15 +419,24 @@ class _ForYouTabState extends State<ForYouTab> {
         return;
       }
       if (!mounted) return;
-      final userDocs = await context.read<FirestoreService>().getRecommendedUsers(myInterests, currentUser.uid);
+      final userDocs = await context
+          .read<UserRepository>()
+          .getRecommendedUsers(myInterests, currentUser.uid);
       final users = userDocs.map((doc) => UserModel.fromDoc(doc)).toList();
       users.sort((a, b) {
-        final aShared = a.interests.where((i) => myInterests.contains(i)).length;
-        final bShared = b.interests.where((i) => myInterests.contains(i)).length;
+        final aShared =
+            a.interests.where((i) => myInterests.contains(i)).length;
+        final bShared =
+            b.interests.where((i) => myInterests.contains(i)).length;
         return bShared.compareTo(aShared);
       });
 
-      if (mounted) setState(() { _recommendedUsers = users; _isLoading = false; });
+      if (mounted) {
+        setState(() {
+          _recommendedUsers = users;
+          _isLoading = false;
+        });
+      }
     } catch (e) {
       if (mounted) setState(() => _isLoading = false);
       debugPrint("Error fetching recommendations: $e");
@@ -373,15 +456,19 @@ class _ForYouTabState extends State<ForYouTab> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Text("Add interests to your profile to get personalized recommendations!", textAlign: TextAlign.center),
+              const Text(
+                  "Add interests to your profile to get personalized recommendations!",
+                  textAlign: TextAlign.center),
               const SizedBox(height: 8),
               ElevatedButton(
                 onPressed: () async {
                   final currentUser = FirebaseAuth.instance.currentUser!;
-                  final user = await context.read<FirestoreService>().getUser(currentUser.uid);
+                  final user =
+                  await context.read<UserRepository>().getUser(currentUser.uid);
                   if (mounted) {
                     Navigator.of(context).push(MaterialPageRoute(
-                      builder: (_) => EditProfileScreen(currentUserData: user.toMap()),
+                      builder: (_) =>
+                          EditProfileScreen(currentUserData: user.toMap()),
                     ));
                   }
                 },
@@ -396,7 +483,11 @@ class _ForYouTabState extends State<ForYouTab> {
     return RefreshIndicator(
       onRefresh: _fetchRecommendedUsers,
       child: GridView.builder(
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 5, childAspectRatio: 0.8, crossAxisSpacing: 2, mainAxisSpacing: 2),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 5,
+            childAspectRatio: 0.8,
+            crossAxisSpacing: 2,
+            mainAxisSpacing: 2),
         itemCount: _recommendedUsers!.length,
         itemBuilder: (context, index) {
           final user = _recommendedUsers![index];
@@ -413,11 +504,24 @@ class CompactUserCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    String? countryFlag;
+    if (user.country.isNotEmpty) {
+      try {
+        final country = CountryService()
+            .getAll()
+            .firstWhere((c) => c.name == user.country);
+        countryFlag = country.flagEmoji;
+      } catch (e) {
+        countryFlag = null;
+      }
+    }
+
     return GestureDetector(
       onTap: () {
         showModalBottomSheet(
           context: context,
-          shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+          shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
           isScrollControlled: true,
           builder: (_) => UserInfoPopup(userId: user.id),
         );
@@ -428,7 +532,7 @@ class CompactUserCard extends StatelessWidget {
         child: GridTile(
           footer: Container(
             padding: const EdgeInsets.symmetric(vertical: 4.0),
-            color: Colors.black.withOpacity(0.5),
+            color: Colors.black.withAlpha(128), // FIX: withOpacity deprecated
             child: Text(
               user.username,
               textAlign: TextAlign.center,
@@ -443,14 +547,15 @@ class CompactUserCard extends StatelessWidget {
                 Image.network(
                   user.photoUrl,
                   fit: BoxFit.cover,
-                  errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
+                  errorBuilder: (context, error, stackTrace) =>
+                  const Icon(Icons.person, size: 40, color: Colors.grey),
                 )
               else
                 const Icon(Icons.person, size: 40, color: Colors.grey),
               if (user.presence)
                 Positioned(
                   top: 4,
-                  right: 4,
+                  left: 4,
                   child: Container(
                     height: 8,
                     width: 8,
@@ -458,6 +563,23 @@ class CompactUserCard extends StatelessWidget {
                       color: Colors.green,
                       shape: BoxShape.circle,
                       border: Border.all(color: Colors.white, width: 1),
+                    ),
+                  ),
+                ),
+              if (countryFlag != null)
+                Positioned(
+                  top: 2,
+                  right: 4,
+                  child: Text(
+                    countryFlag,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      shadows: [
+                        Shadow(
+                          color: Colors.black54,
+                          blurRadius: 2,
+                        )
+                      ],
                     ),
                   ),
                 ),
@@ -479,9 +601,13 @@ class UserGridSkeleton extends StatelessWidget {
       baseColor: Colors.grey[300]!,
       highlightColor: Colors.grey[100]!,
       child: GridView.builder(
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: crossAxisCount, crossAxisSpacing: 4, mainAxisSpacing: 4),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            crossAxisSpacing: 4,
+            mainAxisSpacing: 4),
         itemCount: 15,
-        itemBuilder: (context, index) => Card(clipBehavior: Clip.antiAlias, child: Container(color: Colors.white)),
+        itemBuilder: (context, index) =>
+            Card(clipBehavior: Clip.antiAlias, child: Container(color: Colors.white)),
       ),
     );
   }
@@ -498,34 +624,65 @@ class UserInfoPopup extends StatelessWidget {
       initialChildSize: 0.6,
       maxChildSize: 0.9,
       builder: (_, scrollController) => StreamBuilder<UserModel>(
-        stream: context.read<FirestoreService>().getUserStream(userId),
+        stream: context.read<UserRepository>().getUserStream(userId),
         builder: (context, snapshot) {
-          if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+          if (!snapshot.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
           final user = snapshot.data!;
           return Container(
             padding: const EdgeInsets.symmetric(horizontal: 20.0),
-            decoration: const BoxDecoration(color: Colors.white, borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+            decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
             child: ListView(
               controller: scrollController,
               children: [
                 const SizedBox(height: 12),
-                Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: Colors.grey[300], borderRadius: BorderRadius.circular(2)))),
+                Center(
+                    child: Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                            color: Colors.grey[300],
+                            borderRadius: BorderRadius.circular(2)))),
                 const SizedBox(height: 20),
                 CircleAvatar(
                   radius: 40,
-                  backgroundImage: user.photoUrl.isNotEmpty ? NetworkImage(user.photoUrl) : null,
-                  child: user.photoUrl.isEmpty ? Text(user.username.isNotEmpty ? user.username[0].toUpperCase() : '?', style: const TextStyle(fontSize: 40)) : null,
+                  backgroundImage:
+                  user.photoUrl.isNotEmpty ? NetworkImage(user.photoUrl) : null,
+                  child: user.photoUrl.isEmpty
+                      ? Text(
+                      user.username.isNotEmpty
+                          ? user.username[0].toUpperCase()
+                          : '?',
+                      style: const TextStyle(fontSize: 40))
+                      : null,
                 ),
                 const SizedBox(height: 12),
-                Text('${user.username}, ${user.age}', textAlign: TextAlign.center, style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                Text(user.country, textAlign: TextAlign.center, style: const TextStyle(fontSize: 16, color: Colors.grey)),
+                Text('${user.username}, ${user.age}',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 22, fontWeight: FontWeight.bold)),
+                Text(user.country,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 16, color: Colors.grey)),
                 const SizedBox(height: 16),
-                Text(user.bio, textAlign: TextAlign.center, style: const TextStyle(fontSize: 15)),
+                Text(user.bio,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 15)),
                 const SizedBox(height: 16),
                 if (user.interests.isNotEmpty)
                   Wrap(
-                    spacing: 8.0, runSpacing: 4.0, alignment: WrapAlignment.center,
-                    children: user.interests.map((interest) => Chip(label: Text(interest), backgroundColor: Colors.blue.withOpacity(0.1), labelStyle: const TextStyle(color: Colors.blue))).toList(),
+                    spacing: 8.0,
+                    runSpacing: 4.0,
+                    alignment: WrapAlignment.center,
+                    children: user.interests
+                        .map((interest) => Chip(
+                        label: Text(interest),
+                        backgroundColor: Colors.blue.withAlpha(25), // FIX: withOpacity deprecated
+                        labelStyle: const TextStyle(color: Colors.blue)))
+                        .toList(),
                   ),
                 const SizedBox(height: 24),
                 BlocBuilder<FriendsBloc, FriendsState>(
@@ -538,14 +695,22 @@ class UserInfoPopup extends StatelessWidget {
                           children: [
                             Expanded(
                               child: OutlinedButton(
-                                onPressed: () { Navigator.pop(context); Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))); },
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  Navigator.of(context).push(MaterialPageRoute(
+                                      builder: (_) => ProfileScreen(userId: userId)));
+                                },
                                 child: const Text('View Profile'),
                               ),
                             ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: ElevatedButton(
-                                onPressed: () => context.read<FirestoreService>().startOrGetChat(context, userId, user.username),
+                                // UPDATED: Using ChatRepository
+                                onPressed: () => context
+                                    .read<ChatRepository>()
+                                    .startOrGetChat(
+                                    context, userId, user.username),
                                 child: const Text('Message'),
                               ),
                             ),
@@ -553,9 +718,11 @@ class UserInfoPopup extends StatelessWidget {
                         );
                       }
                     }
-                    // Default view for non-friends or loading state
+                    // UPDATED: Using ChatRepository
                     return ElevatedButton(
-                      onPressed: () => context.read<FirestoreService>().startOrGetChat(context, userId, user.username),
+                      onPressed: () => context
+                          .read<ChatRepository>()
+                          .startOrGetChat(context, userId, user.username),
                       child: const Text('Message'),
                     );
                   },

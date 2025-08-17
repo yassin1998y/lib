@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter_ble_peripheral/flutter_ble_peripheral.dart';
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:permission_handler/permission_handler.dart';
-// **FIX**: Corrected the import path for firebase_auth.
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:hive/hive.dart';
 
@@ -21,7 +21,8 @@ enum NearbyStatus {
 }
 
 class BluetoothStatusService {
-  static final BluetoothStatusService _instance = BluetoothStatusService._internal();
+  static final BluetoothStatusService _instance =
+  BluetoothStatusService._internal();
   factory BluetoothStatusService() => _instance;
   BluetoothStatusService._internal();
 
@@ -37,6 +38,7 @@ class BluetoothStatusService {
 
 class BluetoothService {
   final BluetoothStatusService _statusService = BluetoothStatusService();
+  final UserRepository _userRepository;
   final FlutterBlePeripheral _peripheral = FlutterBlePeripheral();
   StreamSubscription? _scanSubscription;
   StreamSubscription? _adapterStateSubscription;
@@ -46,6 +48,10 @@ class BluetoothService {
 
   static final Guid _serviceUuid = Guid("12345678-1234-5678-1234-56789abcdef0");
   static const int _companyId = 0xFFFF;
+
+  // FIX: The constructor now correctly initializes the private _userRepository field.
+  BluetoothService({required UserRepository userRepository})
+      : _userRepository = userRepository;
 
   Future<void> start() async {
     if (_adapterStateSubscription != null) return;
@@ -85,13 +91,18 @@ class BluetoothService {
   Future<void> startAdvertising() async {
     _shouldBeAdvertising = true;
     final currentUser = FirebaseAuth.instance.currentUser;
-    if (currentUser == null || !(await _checkAndRequestPermissions()) || FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) return;
+    if (currentUser == null ||
+        !(await _checkAndRequestPermissions()) ||
+        FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) return;
     if (await _peripheral.isAdvertising) return;
+
+    final userModel = await _userRepository.getUser(currentUser.uid);
+    final payload = "${currentUser.uid}|${userModel.level}";
 
     final advertiseData = AdvertiseData(
       serviceUuid: _serviceUuid.toString(),
       manufacturerId: _companyId,
-      manufacturerData: utf8.encode(currentUser.uid),
+      manufacturerData: utf8.encode(payload),
     );
 
     try {
@@ -112,19 +123,21 @@ class BluetoothService {
 
   void startScanning() async {
     _shouldBeScanning = true;
-    if (!(await _checkAndRequestPermissions()) || FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) return;
+    if (!(await _checkAndRequestPermissions()) ||
+        FlutterBluePlus.adapterStateNow != BluetoothAdapterState.on) return;
     if (FlutterBluePlus.isScanningNow) return;
 
     _statusService.updateStatus(NearbyStatus.scanning);
 
     try {
-      await FlutterBluePlus.startScan(withServices: [_serviceUuid], timeout: const Duration(days: 1));
+      await FlutterBluePlus.startScan(
+          withServices: [_serviceUuid], timeout: const Duration(days: 1));
       _scanSubscription = FlutterBluePlus.scanResults.listen((results) {
         for (ScanResult r in results) {
           final manuData = r.advertisementData.manufacturerData;
           if (manuData.isNotEmpty && manuData.containsKey(_companyId)) {
-            final userId = String.fromCharCodes(manuData[_companyId]!);
-            _handleFoundUser(userId);
+            final payload = String.fromCharCodes(manuData[_companyId]!);
+            _handleFoundUser(payload);
           }
         }
       });
@@ -144,14 +157,30 @@ class BluetoothService {
     }
   }
 
-  void _handleFoundUser(String userId) {
+  void _handleFoundUser(String payload) async {
     final currentUser = FirebaseAuth.instance.currentUser;
-    if (userId.isNotEmpty && userId != currentUser?.uid) {
-      final box = Hive.box('nearby_contacts');
-      if (!box.containsKey(userId)) {
-        // **FIX**: Corrected the method name to toIso8601String().
-        box.put(userId, DateTime.now().toIso8601String());
+    final parts = payload.split('|');
+    if (parts.length < 2) return;
+
+    final userId = parts[0];
+    final level = int.tryParse(parts[1]) ?? 1;
+
+    if (userId.isEmpty || userId == currentUser?.uid) return;
+
+    final contactsBox = Hive.box('nearby_contacts');
+    final isNewUser = !contactsBox.containsKey(userId);
+
+    contactsBox.put(userId, DateTime.now().toIso8601String());
+
+    if (isNewUser) {
+      try {
+        final userModel = await _userRepository.getUser(userId);
+        final profileBox = Hive.box('user_profiles');
+        profileBox.put(userId, userModel.toMap()..['level'] = level);
         _statusService.updateStatus(NearbyStatus.userFound);
+      } catch (e) {
+        contactsBox.delete(userId);
+        debugPrint("Could not fetch profile for nearby user $userId: $e");
       }
     }
   }

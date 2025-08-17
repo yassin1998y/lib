@@ -1,10 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:freegram/repositories/notification_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/post_repository.dart';
 import 'package:freegram/screens/friends_list_screen.dart';
 import 'package:freegram/screens/post_detail_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
-import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
@@ -16,13 +17,14 @@ class NotificationsScreen extends StatefulWidget {
 }
 
 class _NotificationsScreenState extends State<NotificationsScreen> {
-  /// Marks all unread notifications as read using the FirestoreService.
+  /// Marks all unread notifications as read using the NotificationRepository.
   Future<void> _markAllAsRead() async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser == null) return;
 
+    // UPDATED: Using NotificationRepository
     final success = await context
-        .read<FirestoreService>()
+        .read<NotificationRepository>()
         .markAllNotificationsAsRead(currentUser.uid);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -41,7 +43,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
       return const Scaffold(body: Center(child: Text('Please log in.')));
     }
 
-    final firestoreService = context.read<FirestoreService>();
+    // UPDATED: Get NotificationRepository from context
+    final notificationRepository = context.read<NotificationRepository>();
 
     return Scaffold(
       appBar: AppBar(
@@ -65,7 +68,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
         ],
       ),
       body: StreamBuilder<QuerySnapshot>(
-        stream: firestoreService.getNotificationsStream(currentUser.uid),
+        // UPDATED: Using NotificationRepository
+        stream: notificationRepository.getNotificationsStream(currentUser.uid),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -82,7 +86,8 @@ class _NotificationsScreenState extends State<NotificationsScreen> {
 
               // Mark notification as read when it's built
               if (notif['read'] == false) {
-                firestoreService.markNotificationAsRead(
+                // UPDATED: Using NotificationRepository
+                notificationRepository.markNotificationAsRead(
                     currentUser.uid, notifDoc.id);
               }
 
@@ -147,7 +152,7 @@ class NotificationTile extends StatelessWidget {
         onTap = () async {
           if (postId != null) {
             final postDoc =
-            await context.read<FirestoreService>().getPost(postId);
+            await context.read<PostRepository>().getPost(postId);
             if (postDoc.exists && context.mounted) {
               Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => PostDetailScreen(postSnapshot: postDoc)));
@@ -182,7 +187,7 @@ class NotificationTile extends StatelessWidget {
         onTap = () async {
           if (postId != null) {
             final postDoc =
-            await context.read<FirestoreService>().getPost(postId);
+            await context.read<PostRepository>().getPost(postId);
             if (postDoc.exists && context.mounted) {
               Navigator.of(context).push(MaterialPageRoute(
                   builder: (_) => PostDetailScreen(postSnapshot: postDoc)));
@@ -230,7 +235,6 @@ class NotificationTile extends StatelessWidget {
           }
         };
         break;
-    // NEW: Handle Super Like notifications
       case 'super_like':
         title = RichText(
           text: TextSpan(
@@ -244,8 +248,8 @@ class NotificationTile extends StatelessWidget {
           ),
         );
         leadingIcon = Icons.star;
-        leadingIconColor = Colors.white; // Icon color for the gradient
-        tileColor = Colors.blue.shade100.withOpacity(0.5); // Highlight color
+        leadingIconColor = Colors.white;
+        tileColor = Colors.blue.shade100.withOpacity(0.5);
         onTap = () {
           if (fromUserId.isNotEmpty) {
             Navigator.of(context).push(MaterialPageRoute(

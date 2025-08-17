@@ -2,7 +2,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/chat_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/widgets/chat_list_item_skeleton.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
@@ -40,7 +41,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
   @override
   Widget build(BuildContext context) {
     final currentUser = FirebaseAuth.instance.currentUser!;
-    final firestoreService = context.read<FirestoreService>();
+    // UPDATED: Get ChatRepository from context
+    final chatRepository = context.read<ChatRepository>();
 
     return Scaffold(
       appBar: AppBar(
@@ -69,14 +71,15 @@ class _ChatListScreenState extends State<ChatListScreen> {
         ),
       ),
       body: _searchQuery.isEmpty
-          ? _buildChatList(firestoreService, currentUser.uid)
-          : _buildSearchResults(firestoreService, currentUser.uid),
+          ? _buildChatList(chatRepository, currentUser.uid)
+          : _buildSearchResults(context.read<UserRepository>(), context.read<ChatRepository>(), currentUser.uid),
     );
   }
 
-  Widget _buildChatList(FirestoreService firestoreService, String currentUserId) {
+  Widget _buildChatList(ChatRepository chatRepository, String currentUserId) {
     return StreamBuilder<QuerySnapshot>(
-      stream: firestoreService.getChatsStream(currentUserId),
+      // UPDATED: Using ChatRepository
+      stream: chatRepository.getChatsStream(currentUserId),
       builder: (context, chatSnapshot) {
         if (chatSnapshot.connectionState == ConnectionState.waiting) {
           return ListView.builder(
@@ -106,9 +109,9 @@ class _ChatListScreenState extends State<ChatListScreen> {
     );
   }
 
-  Widget _buildSearchResults(FirestoreService firestoreService, String currentUserId) {
+  Widget _buildSearchResults(UserRepository userRepository, ChatRepository chatRepository, String currentUserId) {
     return StreamBuilder<QuerySnapshot>(
-      stream: firestoreService.searchUsers(_searchQuery),
+      stream: userRepository.searchUsers(_searchQuery),
       builder: (context, userSnapshot) {
         if (userSnapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: CircularProgressIndicator());
@@ -133,7 +136,8 @@ class _ChatListScreenState extends State<ChatListScreen> {
               ),
               title: Text(user.username),
               subtitle: const Text('Tap to message'),
-              onTap: () => firestoreService.startOrGetChat(context, user.id, user.username),
+              // UPDATED: Using ChatRepository
+              onTap: () => chatRepository.startOrGetChat(context, user.id, user.username),
             );
           },
         );
@@ -172,14 +176,16 @@ class ChatListItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final firestoreService = context.read<FirestoreService>();
+    // UPDATED: Get repositories from context
+    final chatRepository = context.read<ChatRepository>();
+    final userRepository = context.read<UserRepository>();
     final chatData = chat.data() as Map<String, dynamic>;
     final usernames = chatData['usernames'] as Map<String, dynamic>;
     final otherUserId = (chatData['users'] as List).firstWhere((id) => id != currentUserId, orElse: () => '');
     final otherUsername = usernames[otherUserId] ?? 'User';
 
     return StreamBuilder<UserModel>(
-      stream: firestoreService.getUserStream(otherUserId),
+      stream: userRepository.getUserStream(otherUserId),
       builder: (context, userSnapshot) {
         if (!userSnapshot.hasData) {
           return const ListTile();
@@ -225,8 +231,9 @@ class ChatListItem extends StatelessWidget {
               },
             );
           },
+          // UPDATED: Using ChatRepository
           onDismissed: (direction) {
-            firestoreService.deleteChat(chat.id);
+            chatRepository.deleteChat(chat.id);
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text("$otherUsername chat deleted")),
             );

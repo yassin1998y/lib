@@ -2,23 +2,24 @@ import 'dart:async';
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart'; // FIX: Added import for debugPrint
+import 'package:flutter/foundation.dart';
 import 'package:freegram/models/user_model.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/user_repository.dart'; // UPDATED
 import 'package:meta/meta.dart';
 
 part 'friends_event.dart';
 part 'friends_state.dart';
 
 class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
-  final FirestoreService _firestoreService;
+  // UPDATED: Now uses UserRepository
+  final UserRepository _userRepository;
   final FirebaseAuth _firebaseAuth;
   StreamSubscription<UserModel>? _friendshipSubscription;
 
   FriendsBloc({
-    required FirestoreService firestoreService,
+    required UserRepository userRepository, // UPDATED
     FirebaseAuth? firebaseAuth,
-  })  : _firestoreService = firestoreService,
+  })  : _userRepository = userRepository, // UPDATED
         _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
         super(FriendsInitial()) {
     on<LoadFriends>(_onLoadFriends);
@@ -41,7 +42,8 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
 
     emit(FriendsLoading());
     _friendshipSubscription?.cancel();
-    _friendshipSubscription = _firestoreService.getUserStream(user.uid).listen(
+    // UPDATED: Calls the method on the new repository
+    _friendshipSubscription = _userRepository.getUserStream(user.uid).listen(
           (userModel) {
         add(_FriendsUpdated(userModel));
       },
@@ -61,7 +63,6 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
     if (user != null && state is FriendsLoaded) {
       final currentState = state as FriendsLoaded;
 
-      // Optimistically update the UI
       final optimisticUser = UserModel(
         id: currentState.user.id,
         username: currentState.user.username,
@@ -85,14 +86,12 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
         blockedUsers: currentState.user.blockedUsers,
         coins: currentState.user.coins,
         superLikes: currentState.user.superLikes,
-        // FIX: Added the missing required parameter
         lastFreeSuperLike: currentState.user.lastFreeSuperLike,
       );
       emit(FriendsRequestSent(user: optimisticUser));
 
-      // Perform the actual backend operation
-      await _firestoreService.sendFriendRequest(user.uid, event.toUserId);
-      // The user stream will push the final, correct state from Firestore automatically.
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.sendFriendRequest(user.uid, event.toUserId);
     }
   }
 
@@ -100,7 +99,8 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
       AcceptFriendRequest event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
-      await _firestoreService.acceptFriendRequest(user.uid, event.fromUserId);
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.acceptFriendRequest(user.uid, event.fromUserId);
     }
   }
 
@@ -108,7 +108,8 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
       DeclineFriendRequest event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
-      await _firestoreService.declineFriendRequest(user.uid, event.fromUserId);
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.declineFriendRequest(user.uid, event.fromUserId);
     }
   }
 
@@ -116,14 +117,16 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
       RemoveFriend event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
-      await _firestoreService.removeFriend(user.uid, event.friendId);
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.removeFriend(user.uid, event.friendId);
     }
   }
 
   Future<void> _onBlockUser(BlockUser event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
-      await _firestoreService.blockUser(user.uid, event.userIdToBlock);
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.blockUser(user.uid, event.userIdToBlock);
     }
   }
 
@@ -131,7 +134,8 @@ class FriendsBloc extends Bloc<FriendsEvent, FriendsState> {
       UnblockUser event, Emitter<FriendsState> emit) async {
     final user = _firebaseAuth.currentUser;
     if (user != null) {
-      await _firestoreService.unblockUser(user.uid, event.userIdToUnblock);
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.unblockUser(user.uid, event.userIdToUnblock);
     }
   }
 

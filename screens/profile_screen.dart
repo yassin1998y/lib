@@ -4,12 +4,13 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/repositories/chat_repository.dart';
+import 'package:freegram/repositories/post_repository.dart';
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/edit_profile_screen.dart';
-import 'package:freegram/screens/friends_list_screen.dart'; // NEW: Import FriendsListScreen
+import 'package:freegram/screens/friends_list_screen.dart';
 import 'package:freegram/screens/level_pass_screen.dart';
 import 'package:freegram/screens/tasks_screen.dart';
-import 'package:freegram/services/firestore_service.dart';
-import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
 import 'post_detail_screen.dart';
@@ -50,24 +51,20 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  /// Creates a visually distinct badge based on the user's level.
   Widget _getBadgeForLevel(int level) {
     Color startColor;
     Color endColor;
-    String tier = level.toString(); // Default to level number
+    String tier = level.toString();
 
     if (level >= 25) {
       startColor = Colors.amber;
       endColor = Colors.orangeAccent;
-      tier = '$level';
     } else if (level >= 15) {
       startColor = Colors.blueGrey.shade200;
       endColor = Colors.grey.shade400;
-      tier = '$level';
     } else if (level >= 5) {
       startColor = const Color(0xFFCD7F32);
       endColor = Colors.orange.shade300;
-      tier = '$level';
     } else {
       startColor = Colors.blue;
       endColor = Colors.lightBlueAccent;
@@ -85,7 +82,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         shape: BoxShape.circle,
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: Colors.black.withAlpha(51),
             blurRadius: 4,
             offset: const Offset(0, 2),
           )
@@ -141,7 +138,8 @@ class _ProfileScreenState extends State<ProfileScreen>
 
   @override
   Widget build(BuildContext context) {
-    final firestoreService = context.read<FirestoreService>();
+    final userRepository = context.read<UserRepository>();
+    final postRepository = context.read<PostRepository>();
     final isCurrentUserProfile =
         FirebaseAuth.instance.currentUser?.uid == widget.userId;
 
@@ -152,7 +150,7 @@ class _ProfileScreenState extends State<ProfileScreen>
         elevation: 1,
       ),
       body: StreamBuilder<UserModel>(
-        stream: firestoreService.getUserStream(widget.userId),
+        stream: userRepository.getUserStream(widget.userId),
         builder: (context, snapshot) {
           if (snapshot.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -168,7 +166,6 @@ class _ProfileScreenState extends State<ProfileScreen>
           final String lastSeenText =
           user.presence ? 'Online' : _formatLastSeen(user.lastSeen);
 
-          // --- XP Calculation for Circular Progress ---
           final xpForNextLevel = user.level * 1000;
           final currentLevelXp = (user.level - 1) * 1000;
           final xpInCurrentLevel = user.xp - currentLevelXp;
@@ -243,12 +240,11 @@ class _ProfileScreenState extends State<ProfileScreen>
                                 mainAxisAlignment:
                                 MainAxisAlignment.spaceEvenly,
                                 children: [
-                                  // --- UPDATED: Made the stat item tappable ---
                                   GestureDetector(
                                     onTap: () => Navigator.of(context).push(
                                       MaterialPageRoute(
                                         builder: (_) =>
-                                        const FriendsListScreen(),
+                                            FriendsListScreen(userId: user.id),
                                       ),
                                     ),
                                     child: _buildStatItem(
@@ -318,7 +314,7 @@ class _ProfileScreenState extends State<ProfileScreen>
             body: TabBarView(
               controller: _tabController,
               children: [
-                _buildPostsGrid(firestoreService, widget.userId),
+                _buildPostsGrid(postRepository, widget.userId),
                 const Center(child: Text('Saved posts will appear here.')),
               ],
             ),
@@ -366,10 +362,10 @@ class _ProfileScreenState extends State<ProfileScreen>
               ),
             );
           } else if (currentUser.friendRequestsSent.contains(profileUser.id)) {
-            friendButton = Expanded(
+            friendButton = const Expanded(
               child: ElevatedButton(
                 onPressed: null,
-                child: const Text('Request Sent'),
+                child: Text('Request Sent'),
               ),
             );
           } else if (currentUser.friendRequestsReceived
@@ -410,7 +406,7 @@ class _ProfileScreenState extends State<ProfileScreen>
               Expanded(
                 child: OutlinedButton(
                   child: const Text('Message'),
-                  onPressed: () => context.read<FirestoreService>().startOrGetChat(
+                  onPressed: () => context.read<ChatRepository>().startOrGetChat(
                       context, profileUser.id, profileUser.username),
                 ),
               ),
@@ -422,14 +418,14 @@ class _ProfileScreenState extends State<ProfileScreen>
     );
   }
 
-  Widget _buildPostsGrid(FirestoreService service, String userId) {
+  Widget _buildPostsGrid(PostRepository repository, String userId) {
     return RefreshIndicator(
       onRefresh: () async {
         setState(() {});
         return Future.value();
       },
       child: StreamBuilder<QuerySnapshot>(
-        stream: service.getUserPostsStream(userId),
+        stream: repository.getUserPostsStream(userId),
         builder: (context, snapshot) {
           if (!snapshot.hasData) {
             return const Center(child: CircularProgressIndicator());

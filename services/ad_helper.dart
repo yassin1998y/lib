@@ -1,3 +1,4 @@
+import 'package:flutter/material.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'dart:io' show Platform;
 
@@ -6,8 +7,6 @@ class AdHelper {
   RewardedAd? _rewardedAd;
   bool _isAdLoaded = false;
 
-  // Use test ad unit IDs for development.
-  // Replace these with your actual AdMob ad unit IDs for production.
   static String get rewardedAdUnitId {
     if (Platform.isAndroid) {
       return 'ca-app-pub-3940256099942544/5224354917';
@@ -18,8 +17,11 @@ class AdHelper {
     }
   }
 
-  /// Loads a rewarded ad.
-  void loadRewardedAd() {
+  /// Loads a rewarded ad and provides callbacks for success or failure.
+  void loadRewardedAd({
+    VoidCallback? onAdLoaded,
+    Function(LoadAdError)? onAdFailedToLoad,
+  }) {
     RewardedAd.load(
       adUnitId: rewardedAdUnitId,
       request: const AdRequest(),
@@ -27,19 +29,21 @@ class AdHelper {
         onAdLoaded: (ad) {
           _rewardedAd = ad;
           _isAdLoaded = true;
+          onAdLoaded?.call();
         },
         onAdFailedToLoad: (LoadAdError error) {
           _isAdLoaded = false;
+          onAdFailedToLoad?.call(error);
         },
       ),
     );
   }
 
   /// Shows the loaded rewarded ad.
-  /// The [onReward] callback is triggered when the user successfully watches the ad.
   void showRewardedAd(Function() onReward) {
     if (!_isAdLoaded || _rewardedAd == null) {
-      // If the ad isn't loaded yet, load it and try again later.
+      debugPrint("Rewarded ad is not ready to be shown.");
+      // Attempt to load another ad for next time.
       loadRewardedAd();
       return;
     }
@@ -47,17 +51,18 @@ class AdHelper {
     _rewardedAd!.fullScreenContentCallback = FullScreenContentCallback(
       onAdDismissedFullScreenContent: (ad) {
         ad.dispose();
+        _isAdLoaded = false;
         loadRewardedAd(); // Pre-load the next ad
       },
       onAdFailedToShowFullScreenContent: (ad, error) {
         ad.dispose();
+        _isAdLoaded = false;
         loadRewardedAd();
       },
     );
 
     _rewardedAd!.show(
       onUserEarnedReward: (AdWithoutView ad, RewardItem reward) {
-        // Grant the reward when this callback is fired.
         onReward();
       },
     );

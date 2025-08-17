@@ -1,4 +1,5 @@
 import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/auth_bloc.dart';
@@ -6,30 +7,32 @@ import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/blocs/nearby_bloc.dart';
 import 'package:freegram/blocs/profile_bloc.dart';
 import 'package:freegram/firebase_options.dart';
+import 'package:freegram/repositories/auth_repository.dart';
+import 'package:freegram/repositories/chat_repository.dart';
+import 'package:freegram/repositories/gamification_repository.dart';
+import 'package:freegram/repositories/notification_repository.dart';
+import 'package:freegram/repositories/post_repository.dart';
+import 'package:freegram/repositories/store_repository.dart';
+import 'package:freegram/repositories/task_repository.dart';
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/edit_profile_screen.dart';
 import 'package:freegram/screens/login_screen.dart';
 import 'package:freegram/screens/main_screen.dart';
 import 'package:freegram/screens/onboarding_screen.dart';
 import 'package:freegram/services/bluetooth_service.dart';
-import 'package:freegram/services/firestore_service.dart';
 import 'package:freegram/widgets/connectivity_wrapper.dart';
 import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:provider/provider.dart';
 
 void main() async {
-  // Ensure Flutter bindings are initialized
   WidgetsFlutterBinding.ensureInitialized();
-
-  // Initialize the Google Mobile Ads SDK
-  MobileAds.instance.initialize();
-
-  // Initialize Firebase
+  if (!kIsWeb) {
+    MobileAds.instance.initialize();
+  }
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
-
-  // Initialize Hive for local storage
   await Hive.initFlutter();
   await Hive.openBox('nearby_contacts');
   await Hive.openBox('user_profiles');
@@ -43,14 +46,43 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Centralized FirestoreService instance
-    final firestoreService = FirestoreService();
+    // Instantiate all repositories.
+    final authRepository = AuthRepository();
+    final notificationRepository = NotificationRepository();
+    final gamificationRepository = GamificationRepository();
+    final taskRepository =
+    TaskRepository(gamificationRepository: gamificationRepository);
+    final storeRepository = StoreRepository();
+
+    // Instantiate repositories that depend on others.
+    final userRepository = UserRepository(
+      notificationRepository: notificationRepository,
+      gamificationRepository: gamificationRepository,
+    );
+    final postRepository = PostRepository(
+      userRepository: userRepository,
+      gamificationRepository: gamificationRepository,
+      taskRepository: taskRepository,
+      notificationRepository: notificationRepository,
+    );
+    final chatRepository = ChatRepository(
+      gamificationRepository: gamificationRepository,
+      taskRepository: taskRepository,
+    );
 
     return MultiProvider(
       providers: [
-        Provider<FirestoreService>.value(value: firestoreService),
+        // Provide all repositories to the widget tree.
+        Provider<AuthRepository>.value(value: authRepository),
+        Provider<UserRepository>.value(value: userRepository),
+        Provider<PostRepository>.value(value: postRepository),
+        Provider<ChatRepository>.value(value: chatRepository),
+        Provider<NotificationRepository>.value(value: notificationRepository),
+        Provider<GamificationRepository>.value(value: gamificationRepository),
+        Provider<TaskRepository>.value(value: taskRepository),
+        Provider<StoreRepository>.value(value: storeRepository),
         Provider<BluetoothService>(
-          create: (_) => BluetoothService(),
+          create: (_) => BluetoothService(userRepository: userRepository),
           dispose: (_, service) => service.dispose(),
         ),
       ],
@@ -58,12 +90,12 @@ class MyApp extends StatelessWidget {
         providers: [
           BlocProvider<AuthBloc>(
             create: (context) => AuthBloc(
-              firestoreService: context.read<FirestoreService>(),
+              authRepository: context.read<AuthRepository>(),
             )..add(CheckAuthentication()),
           ),
           BlocProvider<ProfileBloc>(
             create: (context) => ProfileBloc(
-              firestoreService: context.read<FirestoreService>(),
+              userRepository: context.read<UserRepository>(),
             ),
           ),
           BlocProvider<NearbyBloc>(
@@ -73,7 +105,7 @@ class MyApp extends StatelessWidget {
           ),
           BlocProvider<FriendsBloc>(
             create: (context) => FriendsBloc(
-              firestoreService: context.read<FirestoreService>(),
+              userRepository: context.read<UserRepository>(),
             ),
           ),
         ],
@@ -93,8 +125,6 @@ class MyApp extends StatelessWidget {
   }
 }
 
-/// A wrapper widget that listens to the authentication state and shows the
-/// appropriate screen (Login, Main, or EditProfile).
 class AuthWrapper extends StatelessWidget {
   const AuthWrapper({super.key});
 
@@ -105,7 +135,7 @@ class AuthWrapper extends StatelessWidget {
         if (state is Authenticated) {
           return FutureBuilder<Map<String, dynamic>?>(
             future: context
-                .read<FirestoreService>()
+                .read<UserRepository>()
                 .getUser(state.user.uid)
                 .then((model) => model.toMap()),
             builder: (context, snapshot) {
@@ -115,38 +145,30 @@ class AuthWrapper extends StatelessWidget {
               }
               if (snapshot.hasData && snapshot.data != null) {
                 final userData = snapshot.data!;
-                final bool isProfileComplete =
-                    userData['age'] != null &&
-                        userData['age'] > 0 &&
-                        userData['country'] != null &&
-                        (userData['country'] as String).isNotEmpty;
+                final bool isProfileComplete = userData['age'] != null &&
+                    userData['age'] > 0 &&
+                    userData['country'] != null &&
+                    (userData['country'] as String).isNotEmpty;
 
                 if (isProfileComplete) {
-                  // If profile is complete, show the MainScreen but check
-                  // if we need to show onboarding on top of it.
                   return const MainScreenWrapper();
                 } else {
-                  // If the profile is not complete, force the user to the edit screen
                   return EditProfileScreen(
                     currentUserData: userData,
                     isCompletingProfile: true,
                   );
                 }
               }
-              // If there's no user data, default to the login screen
               return const LoginScreen();
             },
           );
         }
-        // If the user is not authenticated, show the login screen
         return const LoginScreen();
       },
     );
   }
 }
 
-/// A wrapper for the MainScreen that handles showing the OnboardingScreen
-/// on top of it the first time the user logs in.
 class MainScreenWrapper extends StatefulWidget {
   const MainScreenWrapper({super.key});
 
@@ -158,7 +180,6 @@ class _MainScreenWrapperState extends State<MainScreenWrapper> {
   @override
   void initState() {
     super.initState();
-    // This ensures the check happens after the first frame is built.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkOnboarding();
     });
@@ -170,8 +191,6 @@ class _MainScreenWrapperState extends State<MainScreenWrapper> {
     settingsBox.get('hasSeenOnboarding', defaultValue: false);
 
     if (!hasSeenOnboarding && mounted) {
-      // Present OnboardingScreen as a full-screen dialog (modal route).
-      // This pushes it on top of the existing MainScreen.
       Navigator.of(context).push(
         MaterialPageRoute(
           fullscreenDialog: true,
@@ -183,8 +202,6 @@ class _MainScreenWrapperState extends State<MainScreenWrapper> {
 
   @override
   Widget build(BuildContext context) {
-    // This widget always builds the MainScreen.
-    // The onboarding check in initState determines if something appears on top.
     return const MainScreen();
   }
 }

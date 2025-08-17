@@ -1,10 +1,11 @@
-import 'package:cloud_firestore/cloud_firestore.dart'; // NEW: Added missing import
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/repositories/store_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/services/ad_helper.dart';
-import 'package:freegram/services/firestore_service.dart';
-import 'package:freegram/services/in_app_purchase_service.dart'; // FIX: Corrected typo
+import 'package:freegram/services/in_app_purchase_service.dart';
 import 'package:provider/provider.dart';
 
 class StoreScreen extends StatelessWidget {
@@ -48,7 +49,7 @@ class StoreScreen extends StatelessWidget {
 
   Widget _buildUserWallet(BuildContext context, String uid) {
     return StreamBuilder<UserModel>(
-      stream: context.read<FirestoreService>().getUserStream(uid),
+      stream: context.read<UserRepository>().getUserStream(uid),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const Padding(
@@ -59,7 +60,7 @@ class StoreScreen extends StatelessWidget {
         final user = snapshot.data!;
         return Container(
           padding: const EdgeInsets.all(16.0),
-          color: Colors.blue.withOpacity(0.1),
+          color: Colors.blue.withAlpha(25),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
@@ -106,7 +107,8 @@ class _GetItemsTabState extends State<_GetItemsTab> {
     setState(() => _isAdButtonLoading = true);
     try {
       _adHelper.showRewardedAd(() {
-        context.read<FirestoreService>().grantAdReward(widget.userId);
+        // UPDATED: Using StoreRepository
+        context.read<StoreRepository>().grantAdReward(widget.userId);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -116,11 +118,13 @@ class _GetItemsTabState extends State<_GetItemsTab> {
         }
       });
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            backgroundColor: Colors.red,
-            content: Text("Failed to show ad: $e")),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              backgroundColor: Colors.red,
+              content: Text("Failed to show ad: $e")),
+        );
+      }
     } finally {
       if (mounted) {
         setState(() => _isAdButtonLoading = false);
@@ -131,8 +135,9 @@ class _GetItemsTabState extends State<_GetItemsTab> {
   void _purchaseWithCoins() async {
     setState(() => _isCoinButtonLoading = true);
     try {
+      // UPDATED: Using StoreRepository
       await context
-          .read<FirestoreService>()
+          .read<StoreRepository>()
           .purchaseWithCoins(widget.userId, coinCost: 50, superLikeAmount: 5);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -210,15 +215,16 @@ class _GetCoinsTabState extends State<_GetCoinsTab> {
   void initState() {
     super.initState();
     _iapService = InAppPurchaseService(onPurchaseSuccess: (int amount) {
-      // When a purchase is successful, grant the coins via Firestore
       context
-          .read<FirestoreService>()
+          .read<UserRepository>()
           .updateUser(widget.userId, {'coins': FieldValue.increment(amount)});
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            backgroundColor: Colors.green,
-            content: Text("Success! $amount coins have been added.")),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+              backgroundColor: Colors.green,
+              content: Text("Success! $amount coins have been added.")),
+        );
+      }
     });
     _iapService.initialize();
   }

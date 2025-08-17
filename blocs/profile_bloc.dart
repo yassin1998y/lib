@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'package:bloc/bloc.dart';
 import 'package:equatable/equatable.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/user_repository.dart'; // UPDATED
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:meta/meta.dart';
@@ -11,13 +11,14 @@ part 'profile_event.dart';
 part 'profile_state.dart';
 
 class ProfileBloc extends Bloc<ProfileEvent, ProfileState> {
-  final FirestoreService _firestoreService;
+  // UPDATED: Now uses UserRepository
+  final UserRepository _userRepository;
   final FirebaseAuth _firebaseAuth;
 
   ProfileBloc({
-    required FirestoreService firestoreService,
+    required UserRepository userRepository, // UPDATED
     FirebaseAuth? firebaseAuth,
-  })  : _firestoreService = firestoreService,
+  })  : _userRepository = userRepository, // UPDATED
         _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
         super(ProfileInitial()) {
     on<ProfileUpdateEvent>(_onUpdateProfile);
@@ -32,7 +33,6 @@ class ProfileBloc extends Bloc<ProfileEvent, ProfileState> {
     try {
       Map<String, dynamic> dataToUpdate = Map.from(event.updatedData);
 
-      // If a new image file is provided, upload it and get the URL.
       if (event.imageFile != null) {
         final imageUrl = await _uploadToCloudinary(event.imageFile!);
         if (imageUrl != null) {
@@ -42,10 +42,9 @@ class ProfileBloc extends Bloc<ProfileEvent, ProfileState> {
         }
       }
 
-      // Update the user document in Firestore.
-      await _firestoreService.updateUser(event.userId, dataToUpdate);
+      // UPDATED: Calls the method on the new repository
+      await _userRepository.updateUser(event.userId, dataToUpdate);
 
-      // Also update the user's profile in Firebase Auth if needed.
       final currentUser = _firebaseAuth.currentUser;
       if (currentUser != null && currentUser.uid == event.userId) {
         if (dataToUpdate.containsKey('username')) {

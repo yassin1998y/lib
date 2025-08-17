@@ -6,6 +6,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/auth_bloc.dart';
 import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
+import 'package:freegram/repositories/chat_repository.dart';
+import 'package:freegram/repositories/notification_repository.dart';
+import 'package:freegram/repositories/post_repository.dart';
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/chat_list_screen.dart';
 import 'package:freegram/screens/create_post_screen.dart';
 import 'package:freegram/screens/discover_screen.dart';
@@ -13,8 +17,7 @@ import 'package:freegram/screens/match_screen.dart';
 import 'package:freegram/screens/nearby_screen.dart';
 import 'package:freegram/screens/notifications_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
-import 'package:freegram/screens/store_screen.dart'; // Import the new store screen
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/screens/store_screen.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:freegram/widgets/post_card.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -38,7 +41,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     final authState = context.read<AuthBloc>().state;
     if (authState is Authenticated) {
-      // Restore the FriendsBloc loading.
       context.read<FriendsBloc>().add(LoadFriends());
       _setupFcm(authState.user.uid);
       _updateUserPresence(authState.user.uid, true);
@@ -77,7 +79,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   Future<void> _updateUserPresence(String uid, bool isOnline) async {
     try {
       if (mounted) {
-        await context.read<FirestoreService>().updateUserPresence(uid, isOnline);
+        await context.read<UserRepository>().updateUserPresence(uid, isOnline);
       }
     } catch (e) {
       debugPrint("Could not update presence: $e");
@@ -89,12 +91,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await fcm.requestPermission();
     final token = await fcm.getToken();
     if (token != null && mounted) {
-      await context.read<FirestoreService>().updateUser(uid, {'fcmToken': token});
+      await context.read<UserRepository>().updateUser(uid, {'fcmToken': token});
     }
     fcm.onTokenRefresh.listen((newToken) async {
       if (mounted) {
         await context
-            .read<FirestoreService>()
+            .read<UserRepository>()
             .updateUser(uid, {'fcmToken': newToken});
       }
     });
@@ -132,7 +134,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Map<String, dynamic> _getFabConfig(int index) {
     switch (index) {
-      case 0: // Feed
+      case 0:
         return {
           'icon': Icons.add,
           'onPressed': () async {
@@ -143,13 +145,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             }
           },
         };
-      case 1: // Discover
+      case 1:
         return {
           'icon': Icons.whatshot,
           'onPressed': () => Navigator.of(context)
               .push(MaterialPageRoute(builder: (_) => const MatchScreen()))
         };
-      case 2: // Chat
+      case 2:
         return {
           'icon': Icons.edit,
           'onPressed': () {/* TODO: Implement action to start a new chat */}
@@ -164,7 +166,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (authState is Authenticated) {
       return StreamBuilder<int>(
         stream: context
-            .read<FirestoreService>()
+            .read<ChatRepository>()
             .getUnreadChatCountStream(authState.user.uid),
         builder: (context, snapshot) {
           final totalUnread = snapshot.data ?? 0;
@@ -184,7 +186,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (authState is Authenticated) {
       return StreamBuilder<int>(
         stream: context
-            .read<FirestoreService>()
+            .read<NotificationRepository>()
             .getUnreadNotificationCountStream(authState.user.uid),
         builder: (context, snapshot) {
           final unreadCount = snapshot.data ?? 0;
@@ -299,7 +301,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 }
 
-// Placeholder for the FeedWidget.
 class FeedWidget extends StatefulWidget {
   const FeedWidget({super.key});
 
@@ -361,8 +362,8 @@ class _FeedWidgetState extends State<FeedWidget> {
     }
 
     try {
-      final firestoreService = context.read<FirestoreService>();
-      final QuerySnapshot querySnapshot = await firestoreService.getFeedPosts(
+      final postRepository = context.read<PostRepository>();
+      final QuerySnapshot querySnapshot = await postRepository.getFeedPosts(
         currentUser.uid,
         lastDocument: _lastDocument,
       );
@@ -405,7 +406,6 @@ class _FeedWidgetState extends State<FeedWidget> {
           slivers: [
             SliverFillRemaining(
               child: Center(
-                // Updated text to reflect the restored friends system
                 child: Text('No posts to show. Start adding friends!'),
               ),
             ),

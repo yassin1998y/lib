@@ -4,18 +4,20 @@ import 'package:freegram/blocs/season_pass_bloc/season_pass_bloc.dart';
 import 'package:freegram/models/season_model.dart';
 import 'package:freegram/models/season_pass_reward.dart';
 import 'package:freegram/models/user_model.dart';
-import 'package:freegram/services/firestore_service.dart';
-import 'package:intl/intl.dart';
+import 'package:freegram/repositories/gamification_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/user_repository.dart';
+import 'package:freegram/screens/leaderboard_screen.dart';
 
 class LevelPassScreen extends StatelessWidget {
   const LevelPassScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // Provide the BLoC to the widget tree and load the initial data.
     return BlocProvider(
       create: (context) => SeasonPassBloc(
-        firestoreService: context.read<FirestoreService>(),
+        // UPDATED: Provided the required gamificationRepository
+        gamificationRepository: context.read<GamificationRepository>(),
+        userRepository: context.read<UserRepository>(),
       )..add(LoadSeasonPass()),
       child: const _LevelPassView(),
     );
@@ -31,7 +33,6 @@ class _LevelPassView extends StatelessWidget {
       appBar: AppBar(
         title: const Text("Season Pass"),
       ),
-      // Use BlocBuilder to react to state changes from the SeasonPassBloc.
       body: BlocBuilder<SeasonPassBloc, SeasonPassState>(
         builder: (context, state) {
           if (state is SeasonPassLoading || state is SeasonPassInitial) {
@@ -45,7 +46,6 @@ class _LevelPassView extends StatelessWidget {
             final season = state.currentSeason;
             final rewards = state.rewards;
 
-            // Find the next reward the user has not yet unlocked.
             final nextReward = rewards.firstWhere(
                   (reward) => reward.level > user.seasonLevel,
               orElse: () => rewards.last,
@@ -86,12 +86,26 @@ class _LevelPassView extends StatelessWidget {
     final daysLeft = season.endDate.difference(DateTime.now()).inDays;
     return Column(
       children: [
-        Text(
-          season.title,
-          style: Theme.of(context)
-              .textTheme
-              .headlineMedium
-              ?.copyWith(fontWeight: FontWeight.bold),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(
+              season.title,
+              style: Theme.of(context)
+                  .textTheme
+                  .headlineMedium
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            IconButton(
+              icon: const Icon(Icons.leaderboard, color: Colors.blue),
+              tooltip: "View Leaderboard",
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const LeaderboardScreen()),
+                );
+              },
+            ),
+          ],
         ),
         const SizedBox(height: 8),
         Text(
@@ -195,7 +209,7 @@ class _RewardListItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      color: isUnlocked ? Colors.blue.withOpacity(0.1) : null,
+      color: isUnlocked ? Colors.blue.withAlpha(25) : null, // FIX: withOpacity deprecated
       child: ListTile(
         leading: Icon(
           reward.icon,

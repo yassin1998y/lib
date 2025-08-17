@@ -1,7 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/post_repository.dart'; // UPDATED
 import 'package:provider/provider.dart';
 
 class CommentsScreen extends StatefulWidget {
@@ -15,14 +15,13 @@ class CommentsScreen extends StatefulWidget {
 class _CommentsScreenState extends State<CommentsScreen> {
   final _commentController = TextEditingController();
 
-  /// Posts a new comment using the FirestoreService.
   Future<void> _postComment() async {
     final currentUser = FirebaseAuth.instance.currentUser;
     final commentText = _commentController.text.trim();
 
     if (currentUser != null && commentText.isNotEmpty) {
-      // Use the centralized service to handle the logic
-      await context.read<FirestoreService>().addComment(
+      // UPDATED: Uses PostRepository
+      await context.read<PostRepository>().addComment(
         postId: widget.postId,
         userId: currentUser.uid,
         username: currentUser.displayName ?? 'Anonymous',
@@ -30,14 +29,14 @@ class _CommentsScreenState extends State<CommentsScreen> {
         userPhotoUrl: currentUser.photoURL,
       );
 
-      // Clear the input field after posting
       _commentController.clear();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final firestoreService = context.read<FirestoreService>();
+    // UPDATED: Uses PostRepository
+    final postRepository = context.read<PostRepository>();
 
     return Scaffold(
       appBar: AppBar(
@@ -48,9 +47,9 @@ class _CommentsScreenState extends State<CommentsScreen> {
       body: Column(
         children: [
           Expanded(
-            // Stream comments directly from the FirestoreService
             child: StreamBuilder<QuerySnapshot>(
-              stream: firestoreService.getPostCommentsStream(widget.postId),
+              // UPDATED: Uses PostRepository
+              stream: postRepository.getPostCommentsStream(widget.postId),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
@@ -72,7 +71,6 @@ class _CommentsScreenState extends State<CommentsScreen> {
               },
             ),
           ),
-          // Input field for adding a new comment
           Padding(
             padding: const EdgeInsets.all(8.0),
             child: Row(

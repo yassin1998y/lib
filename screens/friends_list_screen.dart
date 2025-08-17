@@ -2,14 +2,15 @@ import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/friends_bloc/friends_bloc.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/profile_screen.dart';
-import 'package:freegram/services/firestore_service.dart';
 import 'package:provider/provider.dart';
 
 class FriendsListScreen extends StatefulWidget {
   final int initialIndex;
+  final String? userId;
 
-  const FriendsListScreen({super.key, this.initialIndex = 0});
+  const FriendsListScreen({super.key, this.initialIndex = 0, this.userId});
 
   @override
   State<FriendsListScreen> createState() => _FriendsListScreenState();
@@ -23,7 +24,9 @@ class _FriendsListScreenState extends State<FriendsListScreen>
   void initState() {
     super.initState();
     _tabController = TabController(
-        length: 3, vsync: this, initialIndex: widget.initialIndex);
+        length: widget.userId == null ? 3 : 1,
+        vsync: this,
+        initialIndex: widget.userId == null ? widget.initialIndex : 0);
   }
 
   @override
@@ -34,6 +37,10 @@ class _FriendsListScreenState extends State<FriendsListScreen>
 
   @override
   Widget build(BuildContext context) {
+    if (widget.userId != null) {
+      return _buildOtherUserProfile();
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Manage Friends'),
@@ -58,7 +65,7 @@ class _FriendsListScreenState extends State<FriendsListScreen>
             return TabBarView(
               controller: _tabController,
               children: [
-                _buildFriendsTab(state.user.friends),
+                _buildFriendsList(state.user.friends),
                 _buildRequestsTab(state.user.friendRequestsReceived),
                 _buildBlockedTab(state.user.blockedUsers),
               ],
@@ -70,9 +77,40 @@ class _FriendsListScreenState extends State<FriendsListScreen>
     );
   }
 
-  Widget _buildFriendsTab(List<String> friendIds) {
+  Widget _buildOtherUserProfile() {
+    final userRepository = context.read<UserRepository>();
+    return Scaffold(
+      appBar: AppBar(),
+      body: FutureBuilder<UserModel>(
+        future: userRepository.getUser(widget.userId!),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError || !snapshot.hasData) {
+            return const Center(child: Text('Could not load user.'));
+          }
+          final user = snapshot.data!;
+          return NestedScrollView(
+            headerSliverBuilder: (context, innerBoxIsScrolled) {
+              return [
+                SliverAppBar(
+                  title: Text("${user.username}'s Friends"),
+                  automaticallyImplyLeading: false,
+                  pinned: true,
+                ),
+              ];
+            },
+            body: _buildFriendsList(user.friends),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildFriendsList(List<String> friendIds) {
     if (friendIds.isEmpty) {
-      return const Center(child: Text('You have no friends yet.'));
+      return const Center(child: Text('No friends to show.'));
     }
     return ListView.builder(
       itemCount: friendIds.length,
@@ -149,10 +187,10 @@ class UserListTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final firestoreService = context.read<FirestoreService>();
+    final userRepository = context.read<UserRepository>();
 
     return FutureBuilder<UserModel>(
-      future: firestoreService.getUser(userId),
+      future: userRepository.getUser(userId),
       builder: (context, snapshot) {
         if (!snapshot.hasData) {
           return const ListTile(

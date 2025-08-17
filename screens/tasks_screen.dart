@@ -1,11 +1,12 @@
-import 'package:firebase_auth/firebase_auth.dart'; // NEW: Import FirebaseAuth
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/tasks_bloc/tasks_bloc.dart';
 import 'package:freegram/models/daily_task.dart';
 import 'package:freegram/models/task_progress.dart';
 import 'package:freegram/models/user_model.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/task_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/user_repository.dart';
 
 class TasksScreen extends StatelessWidget {
   const TasksScreen({super.key});
@@ -14,7 +15,8 @@ class TasksScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return BlocProvider(
       create: (context) => TasksBloc(
-        firestoreService: context.read<FirestoreService>(),
+        // UPDATED: Provided the required taskRepository
+        taskRepository: context.read<TaskRepository>(),
       )..add(LoadTasks()),
       child: const _TasksScreenView(),
     );
@@ -26,10 +28,8 @@ class _TasksScreenView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // FIX: Get the current user ID safely from FirebaseAuth.
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
-    // FIX: Handle the case where there is no logged-in user.
     if (currentUserId == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('Daily Tasks & Rewards')),
@@ -38,8 +38,7 @@ class _TasksScreenView extends StatelessWidget {
     }
 
     return StreamBuilder<UserModel>(
-      // FIX: Use the safely obtained currentUserId.
-      stream: context.read<FirestoreService>().getUserStream(currentUserId),
+      stream: context.read<UserRepository>().getUserStream(currentUserId),
       builder: (context, userSnapshot) {
         final user = userSnapshot.data;
         return Scaffold(
@@ -103,7 +102,7 @@ class _TasksScreenView extends StatelessWidget {
       padding: const EdgeInsets.all(16.0),
       margin: const EdgeInsets.all(8.0),
       decoration: BoxDecoration(
-        color: Colors.blue.withOpacity(0.1),
+        color: Colors.blue.withAlpha(25),
         borderRadius: BorderRadius.circular(12.0),
       ),
       child: Column(
@@ -212,7 +211,7 @@ class _TaskCard extends StatelessWidget {
     return Chip(
       avatar: Icon(icon, color: color, size: 18),
       label: Text(label),
-      backgroundColor: color.withOpacity(0.1),
+      backgroundColor: color.withAlpha(25),
       padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
     );
   }

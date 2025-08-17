@@ -17,27 +17,20 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   bool _isLoading = false;
 
-  /// Validates the form and attempts to sign in the user with email/password.
   Future<void> _login() async {
-    // 1. Validate the form, if invalid, do nothing.
     if (!_formKey.currentState!.validate()) return;
 
-    // 2. Set loading state to show progress indicator.
     setState(() {
       _isLoading = true;
     });
 
     try {
-      // 3. Use FirebaseAuth directly for the sign-in action.
-      // The AuthBloc will automatically pick up the state change via its listener.
       await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: _emailController.text.trim(),
         password: _passwordController.text.trim(),
       );
-      // No need to set loading to false here, as the AuthWrapper will rebuild
-      // and navigate away on success.
+      // On success, the BlocListener will handle navigation.
     } on FirebaseAuthException catch (e) {
-      // 4. Handle login errors.
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -47,7 +40,6 @@ class _LoginScreenState extends State<LoginScreen> {
         );
       }
     } finally {
-      // 5. Always ensure loading state is turned off if the widget is still mounted.
       if (mounted) {
         setState(() {
           _isLoading = false;
@@ -65,20 +57,26 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: BlocListener<AuthBloc, AuthState>(
-        // Listen for authentication errors from the BLoC (e.g., from social sign-in)
-        listener: (context, state) {
-          if (state is AuthError) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: Text(state.message),
-                backgroundColor: Colors.red,
-              ),
-            );
-          }
-        },
-        child: Center(
+    // --- FIX: Wrapped the Scaffold in a BlocListener ---
+    return BlocListener<AuthBloc, AuthState>(
+      // This listener will react to auth state changes and navigate.
+      listener: (context, state) {
+        if (state is Authenticated) {
+          // Pop all routes until we get back to the AuthWrapper.
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        }
+        // Also listen for social sign-in errors from the BLoC
+        if (state is AuthError) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(state.message),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      },
+      child: Scaffold(
+        body: Center(
           child: SingleChildScrollView(
             padding: const EdgeInsets.all(32.0),
             child: Form(
@@ -158,7 +156,6 @@ class _LoginScreenState extends State<LoginScreen> {
                         style: TextStyle(color: Color(0xFF3498DB))),
                   ),
                   const SizedBox(height: 24.0),
-                  // --- Social Logins Section ---
                   Row(
                     children: [
                       const Expanded(child: Divider()),
@@ -201,8 +198,8 @@ class _LoginScreenState extends State<LoginScreen> {
 /// A reusable button widget for social media logins.
 class _SocialLoginButton extends StatelessWidget {
   final String text;
-  final String? assetName; // For image assets like the Google logo
-  final IconData? icon; // For icons like the Facebook logo
+  final String? assetName;
+  final IconData? icon;
   final VoidCallback onPressed;
   final Color backgroundColor;
   final Color textColor;

@@ -2,22 +2,23 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/repositories/post_repository.dart'; // UPDATED
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/chat_screen.dart'; // Contains FullScreenImageScreen
 import 'package:freegram/screens/comments_screen.dart';
 import 'package:freegram/screens/post_detail_screen.dart';
-import 'package:freegram/screens/profile_screen.dart'; // Corrected import
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/screens/profile_screen.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
 
 class PostCard extends StatefulWidget {
   final DocumentSnapshot post;
-  final bool isDetailView; // Flag to check the context
+  final bool isDetailView;
 
   const PostCard({
     super.key,
     required this.post,
-    this.isDetailView = false, // Default to false (for the feed)
+    this.isDetailView = false,
   });
 
   @override
@@ -52,16 +53,17 @@ class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
     if (currentUser == null) return;
 
     final postData = widget.post.data() as Map<String, dynamic>;
-    final firestoreService = context.read<FirestoreService>();
+    // UPDATED: Uses PostRepository
+    final postRepository = context.read<PostRepository>();
 
     if (forceLike) {
-      final likesSnapshot = await firestoreService.getPostLikesStream(widget.post.id).first;
+      final likesSnapshot = await postRepository.getPostLikesStream(widget.post.id).first;
       final userHasLiked = likesSnapshot.docs.any((doc) => doc.id == currentUser.uid);
       if (userHasLiked) return;
     }
 
     try {
-      await firestoreService.togglePostLike(
+      await postRepository.togglePostLike(
         postId: widget.post.id,
         userId: currentUser.uid,
         postOwnerId: postData['userId'],
@@ -114,7 +116,8 @@ class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
 
     if (shouldDelete == true) {
       try {
-        await context.read<FirestoreService>().deletePost(widget.post.id);
+        // UPDATED: Uses PostRepository
+        await context.read<PostRepository>().deletePost(widget.post.id);
         messenger.showSnackBar(const SnackBar(content: Text('Post deleted')));
       } catch (e) {
         messenger.showSnackBar(SnackBar(content: Text('Error deleting post: $e')));
@@ -124,7 +127,9 @@ class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
 
   @override
   Widget build(BuildContext context) {
-    final firestoreService = context.read<FirestoreService>();
+    // UPDATED: Get repositories from context
+    final postRepository = context.read<PostRepository>();
+    final userRepository = context.read<UserRepository>();
     final postData = widget.post.data() as Map<String, dynamic>;
     final String username = postData['username'] ?? 'Anonymous';
     final String userId = postData['userId'] ?? '';
@@ -151,7 +156,8 @@ class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
                   child: Row(
                     children: [
                       StreamBuilder<UserModel>(
-                        stream: firestoreService.getUserStream(userId),
+                        // UPDATED: Uses UserRepository
+                        stream: userRepository.getUserStream(userId),
                         builder: (context, snapshot) {
                           if (!snapshot.hasData) {
                             return const CircleAvatar(radius: 18, backgroundColor: Colors.grey);
@@ -234,7 +240,8 @@ class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
             ),
           ),
           StreamBuilder<QuerySnapshot>(
-            stream: firestoreService.getPostLikesStream(widget.post.id),
+            // UPDATED: Uses PostRepository
+            stream: postRepository.getPostLikesStream(widget.post.id),
             builder: (context, snapshot) {
               final likesCount = snapshot.data?.docs.length ?? 0;
               final userHasLiked = snapshot.data?.docs.any((doc) => doc.id == currentUser?.uid) ?? false;
@@ -284,7 +291,8 @@ class _PostCardState extends State<PostCard> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 8.0),
                 StreamBuilder<QuerySnapshot>(
-                  stream: firestoreService.getPostCommentsStream(widget.post.id, limit: 2),
+                  // UPDATED: Uses PostRepository
+                  stream: postRepository.getPostCommentsStream(widget.post.id, limit: 2),
                   builder: (context, snapshot) {
                     if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                       return InkWell(

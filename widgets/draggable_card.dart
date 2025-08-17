@@ -4,24 +4,26 @@ import 'package:flutter/material.dart';
 // Enum to represent the swipe direction
 enum SwipeDirection { left, right, up, none }
 
+// FIX: The key is now passed to the StatefulWidget to access its state.
 class DraggableCard extends StatefulWidget {
   final Widget child;
   final Function(SwipeDirection direction) onSwipe;
 
   const DraggableCard({
-    super.key,
+    required Key key, // Key is now required
     required this.child,
     required this.onSwipe,
-  });
+  }) : super(key: key);
 
   @override
-  State<DraggableCard> createState() => _DraggableCardState();
+  // FIX: State class is now public to be accessed from the parent.
+  DraggableCardState createState() => DraggableCardState();
 }
 
-class _DraggableCardState extends State<DraggableCard>
+// FIX: State class is now public.
+class DraggableCardState extends State<DraggableCard>
     with TickerProviderStateMixin {
   late AnimationController _animationController;
-  late Animation<double> _rotationAnimation;
   late Animation<Offset> _slideAnimation;
   Offset _dragPosition = Offset.zero;
   SwipeDirection _swipeDirection = SwipeDirection.none;
@@ -58,12 +60,12 @@ class _DraggableCardState extends State<DraggableCard>
     final screenWidth = MediaQuery.of(context).size.width;
     final screenHeight = MediaQuery.of(context).size.height;
 
-    // Check if the swipe was significant enough to trigger an action
-    if (_dragPosition.dx.abs() > screenWidth / 4 ||
-        _dragPosition.dy < -screenHeight / 5) {
+    // FIX: Reduced the swipe threshold to make it more sensitive.
+    // It now only requires dragging 1/6th of the screen width.
+    if (_dragPosition.dx.abs() > screenWidth / 6 ||
+        _dragPosition.dy < -screenHeight / 6) {
       _animateCardOffScreen();
     } else {
-      // If not, animate the card back to the center
       _animateCardToCenter();
     }
   }
@@ -81,11 +83,24 @@ class _DraggableCardState extends State<DraggableCard>
   }
 
   void _animateCardOffScreen() {
-    double endDx = _dragPosition.dx > 0 ? 500 : -500;
-    double endDy = _dragPosition.dy;
+    double endDx = 0;
+    double endDy = 0;
 
-    if (_swipeDirection == SwipeDirection.up) {
-      endDy = -800;
+    switch (_swipeDirection) {
+      case SwipeDirection.left:
+        endDx = -500;
+        break;
+      case SwipeDirection.right:
+        endDx = 500;
+        break;
+      case SwipeDirection.up:
+        endDy = -800;
+        break;
+      case SwipeDirection.none:
+      // This case should ideally not be hit if called from _onPanEnd
+      // but as a fallback, we can treat it as a cancel.
+        _animateCardToCenter();
+        return;
     }
 
     _slideAnimation = Tween<Offset>(
@@ -113,6 +128,15 @@ class _DraggableCardState extends State<DraggableCard>
         _animationController.reset();
       });
     });
+  }
+
+  /// NEW: Public method to trigger the swipe animation from the parent widget.
+  void triggerSwipe(SwipeDirection direction) {
+    if (direction == SwipeDirection.none) return;
+    setState(() {
+      _swipeDirection = direction;
+    });
+    _animateCardOffScreen();
   }
 
   @override

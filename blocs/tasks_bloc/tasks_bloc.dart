@@ -3,24 +3,24 @@ import 'package:bloc/bloc.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:equatable/equatable.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart'; // FIX: Added this import for @immutable
 import 'package:freegram/models/daily_task.dart';
 import 'package:freegram/models/task_progress.dart';
-import 'package:freegram/services/firestore_service.dart';
-import 'package:meta/meta.dart';
+import 'package:freegram/repositories/task_repository.dart';
 
 part 'tasks_event.dart';
 part 'tasks_state.dart';
 
 class TasksBloc extends Bloc<TasksEvent, TasksState> {
-  final FirestoreService _firestoreService;
+  final TaskRepository _taskRepository;
   final FirebaseAuth _firebaseAuth;
   StreamSubscription? _taskProgressSubscription;
   List<DailyTask> _allTasksCache = [];
 
   TasksBloc({
-    required FirestoreService firestoreService,
+    required TaskRepository taskRepository,
     FirebaseAuth? firebaseAuth,
-  })  : _firestoreService = firestoreService,
+  })  : _taskRepository = taskRepository,
         _firebaseAuth = firebaseAuth ?? FirebaseAuth.instance,
         super(TasksInitial()) {
     on<LoadTasks>(_onLoadTasks);
@@ -38,18 +38,15 @@ class TasksBloc extends Bloc<TasksEvent, TasksState> {
     await _taskProgressSubscription?.cancel();
 
     try {
-      // Fetch all task definitions once and cache them.
-      _allTasksCache = await _firestoreService.getDailyTasks();
+      _allTasksCache = await _taskRepository.getDailyTasks();
 
-      // Listen to the user's progress stream.
-      _taskProgressSubscription = _firestoreService
+      _taskProgressSubscription = _taskRepository
           .getUserTaskProgressStream(user.uid)
           .listen((QuerySnapshot progressSnapshot) {
         final userProgress = progressSnapshot.docs
             .map((doc) => TaskProgress.fromDoc(doc))
             .toList();
 
-        // When progress updates, combine it with the cached task definitions.
         add(_TasksUpdated(
           allTasks: _allTasksCache,
           userProgress: userProgress,

@@ -6,14 +6,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:freegram/models/message.dart';
 import 'package:freegram/models/user_model.dart';
-import 'package:freegram/services/firestore_service.dart';
+import 'package:freegram/repositories/chat_repository.dart'; // UPDATED IMPORT
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
 import 'package:timeago/timeago.dart' as timeago;
 import 'package:path/path.dart' as path;
 import 'profile_screen.dart';
-import 'package:intl/intl.dart'; // Import for date formatting
+import 'package:intl/intl.dart';
 
 class ChatScreen extends StatefulWidget {
   final String chatId;
@@ -30,13 +31,13 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _typingTimer;
   bool _isUploading = false;
   final ScrollController _scrollController = ScrollController();
-  late final FirestoreService _firestoreService;
+  // UPDATED: Use ChatRepository
+  late final ChatRepository _chatRepository;
+  late final UserRepository _userRepository;
 
-  final GlobalKey<AnimatedListState> _listKey = GlobalKey<AnimatedListState>();
-  final List<Message> _messages = [];
+  List<Message> _messages = [];
   StreamSubscription? _messageSubscription;
   String? _firstUnreadMessageId;
-  bool _isInitialLoad = true;
 
   String? _replyingToMessageId;
   String? _replyingToMessageText;
@@ -46,8 +47,10 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _firestoreService = context.read<FirestoreService>();
-    _firestoreService.resetUnreadCount(
+    // UPDATED: Initialize repositories from context
+    _chatRepository = context.read<ChatRepository>();
+    _userRepository = context.read<UserRepository>();
+    _chatRepository.resetUnreadCount(
         widget.chatId, FirebaseAuth.instance.currentUser!.uid);
     _messageController.addListener(_onTyping);
     _listenForMessages();
@@ -65,56 +68,29 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _onRefresh() async {
-    _messageSubscription?.cancel();
-
-    setState(() {
-      _messages.clear();
-      _isInitialLoad = true;
-    });
-
-    _listenForMessages();
+    return Future.value();
   }
 
   void _listenForMessages() {
     final currentUser = FirebaseAuth.instance.currentUser!;
+    // UPDATED: Using ChatRepository
     _messageSubscription =
-        _firestoreService.getMessagesStream(widget.chatId).listen((snapshot) {
-          if (!snapshot.metadata.hasPendingWrites) {
-            if (_isInitialLoad) {
-              final initialMessages =
-              snapshot.docs.map((doc) => Message.fromDoc(doc)).toList();
-              _messages.addAll(initialMessages);
-              _isInitialLoad = false;
-            }
-
-            for (final change in snapshot.docChanges) {
-              final message = Message.fromDoc(change.doc);
-              switch (change.type) {
-                case DocumentChangeType.added:
-                  if (_messages.every((m) => m.id != message.id)) {
-                    final optimisticIndex = _messages.indexWhere((m) =>
-                    m.status == MessageStatus.sending &&
-                        m.text == message.text &&
-                        m.senderId == message.senderId);
-
-                    if (optimisticIndex != -1) {
-                      setState(() => _messages[optimisticIndex] = message);
-                    } else {
-                      _addMessageToList(message);
-                    }
-                  }
-                  break;
-                case DocumentChangeType.modified:
-                  _updateMessageInList(message);
-                  break;
-                case DocumentChangeType.removed:
-                  _removeMessageFromList(message);
-                  break;
-              }
-            }
-
+        _chatRepository.getMessagesStream(widget.chatId).listen((snapshot) {
+          if (mounted) {
             final serverMessages =
             snapshot.docs.map((doc) => Message.fromDoc(doc)).toList();
+
+            final optimisticMessages = _messages
+                .where((m) => m.status == MessageStatus.sending)
+                .where((optimistic) => !serverMessages.any((server) =>
+            server.senderId == optimistic.senderId &&
+                server.text == optimistic.text))
+                .toList();
+
+            setState(() {
+              _messages = [...optimisticMessages, ...serverMessages];
+            });
+
             final firstUnread = serverMessages
                 .where((m) =>
             m.senderId != currentUser.uid && m.status != MessageStatus.seen)
@@ -133,32 +109,10 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   void _addMessageToList(Message message) {
-    if (mounted && _listKey.currentState != null) {
-      _messages.insert(0, message);
-      _listKey.currentState!.insertItem(0, duration: const Duration(milliseconds: 300));
-    }
-  }
-
-  void _updateMessageInList(Message updatedMessage) {
-    final index = _messages.indexWhere((m) => m.id == updatedMessage.id);
-    if (index != -1 && mounted) {
-      setState(() => _messages[index] = updatedMessage);
-    }
-  }
-
-  void _removeMessageFromList(Message messageToRemove) {
-    final index = _messages.indexWhere((m) => m.id == messageToRemove.id);
-    if (index != -1 && mounted && _listKey.currentState != null) {
-      final removedItem = _messages.removeAt(index);
-      _listKey.currentState!.removeItem(
-        index,
-            (context, animation) => SizeTransition(
-          sizeFactor: animation,
-          child: MessageBubble(
-              message: removedItem, isMe: false, onLongPress: () {}),
-        ),
-        duration: const Duration(milliseconds: 300),
-      );
+    if (mounted) {
+      setState(() {
+        _messages.insert(0, message);
+      });
     }
   }
 
@@ -174,7 +128,8 @@ class _ChatScreenState extends State<ChatScreen> {
         .map((doc) => doc.id)
         .toList();
     if (unreadMessageIds.isNotEmpty) {
-      _firestoreService.markMultipleMessagesAsSeen(
+      // UPDATED: Using ChatRepository
+      _chatRepository.markMultipleMessagesAsSeen(
           widget.chatId, unreadMessageIds);
     }
   }
@@ -189,7 +144,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Future<void> _updateTypingStatus(bool isTyping) async {
     final currentUser = FirebaseAuth.instance.currentUser;
     if (currentUser != null) {
-      await _firestoreService.updateTypingStatus(
+      // UPDATED: Using ChatRepository
+      await _chatRepository.updateTypingStatus(
           widget.chatId, currentUser.uid, isTyping);
     }
   }
@@ -214,7 +170,8 @@ class _ChatScreenState extends State<ChatScreen> {
       _cancelReply();
 
       try {
-        await _firestoreService.sendMessage(
+        // UPDATED: Using ChatRepository
+        await _chatRepository.sendMessage(
           chatId: widget.chatId,
           senderId: currentUser.uid,
           text: messageText,
@@ -286,7 +243,8 @@ class _ChatScreenState extends State<ChatScreen> {
       final imageUrl = await _uploadToCloudinary(File(pickedFile.path));
       if (imageUrl == null) throw Exception('Image upload failed');
       final currentUser = FirebaseAuth.instance.currentUser!;
-      await _firestoreService.sendMessage(
+      // UPDATED: Using ChatRepository
+      await _chatRepository.sendMessage(
           chatId: widget.chatId,
           senderId: currentUser.uid,
           imageUrl: imageUrl,
@@ -296,8 +254,10 @@ class _ChatScreenState extends State<ChatScreen> {
           replyToSender: _replyingToSender);
       _cancelReply();
     } catch (e) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Failed to send image: $e')));
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Failed to send image: $e')));
+      }
     } finally {
       if (mounted) setState(() => _isUploading = false);
     }
@@ -345,7 +305,8 @@ class _ChatScreenState extends State<ChatScreen> {
                   icon: Text(emoji, style: const TextStyle(fontSize: 24)),
                   onPressed: () {
                     Navigator.of(context).pop();
-                    _firestoreService.toggleMessageReaction(widget.chatId,
+                    // UPDATED: Using ChatRepository
+                    _chatRepository.toggleMessageReaction(widget.chatId,
                         message.id, FirebaseAuth.instance.currentUser!.uid, emoji);
                   },
                 );
@@ -373,7 +334,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 title: const Text('Delete', style: TextStyle(color: Colors.red)),
                 onTap: () {
                   Navigator.of(context).pop();
-                  _firestoreService.deleteMessage(widget.chatId, message.id);
+                  // UPDATED: Using ChatRepository
+                  _chatRepository.deleteMessage(widget.chatId, message.id);
                 },
               ),
           ],
@@ -398,7 +360,8 @@ class _ChatScreenState extends State<ChatScreen> {
           TextButton(
               onPressed: () {
                 if (editController.text.trim().isNotEmpty) {
-                  _firestoreService.editMessage(
+                  // UPDATED: Using ChatRepository
+                  _chatRepository.editMessage(
                       widget.chatId, messageId, editController.text.trim());
                 }
                 Navigator.of(context).pop();
@@ -411,7 +374,8 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _buildTypingIndicator(String otherUserId) {
     return StreamBuilder<DocumentSnapshot>(
-      stream: _firestoreService.getChatStream(widget.chatId),
+      // UPDATED: Using ChatRepository
+      stream: _chatRepository.getChatStream(widget.chatId),
       builder: (context, snapshot) {
         if (!snapshot.hasData || !snapshot.data!.exists) return const SizedBox.shrink();
         final chatData = snapshot.data!.data() as Map<String, dynamic>;
@@ -436,7 +400,8 @@ class _ChatScreenState extends State<ChatScreen> {
   Widget build(BuildContext context) {
     final currentUser = FirebaseAuth.instance.currentUser!;
     return StreamBuilder<DocumentSnapshot>(
-      stream: _firestoreService.getChatStream(widget.chatId),
+      // UPDATED: Using ChatRepository
+      stream: _chatRepository.getChatStream(widget.chatId),
       builder: (context, chatSnapshot) {
         if (!chatSnapshot.hasData || !chatSnapshot.data!.exists) {
           return Scaffold(
@@ -463,7 +428,7 @@ class _ChatScreenState extends State<ChatScreen> {
         final Timestamp? matchTimestamp = chatData['matchTimestamp'];
 
         return StreamBuilder<UserModel>(
-          stream: _firestoreService.getUserStream(otherUserId),
+          stream: _userRepository.getUserStream(otherUserId),
           builder: (context, userSnapshot) {
             if (!userSnapshot.hasData) {
               return Scaffold(
@@ -515,85 +480,87 @@ class _ChatScreenState extends State<ChatScreen> {
                   ),
                 ),
               ),
-              body: RefreshIndicator(
-                onRefresh: _onRefresh,
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: ListView.builder(
-                        reverse: true,
-                        padding: const EdgeInsets.all(8.0),
-                        itemCount: _messages.length + (matchTimestamp != null ? 1 : 0),
-                        itemBuilder: (context, index) {
-                          if (matchTimestamp != null && index == _messages.length) {
-                            return MatchBadge(timestamp: matchTimestamp.toDate());
-                          }
+              body: SafeArea(
+                child: RefreshIndicator(
+                  onRefresh: _onRefresh,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: ListView.builder(
+                          reverse: true,
+                          padding: const EdgeInsets.all(8.0),
+                          itemCount: _messages.length + (matchTimestamp != null ? 1 : 0),
+                          itemBuilder: (context, index) {
+                            if (matchTimestamp != null && index == _messages.length) {
+                              return MatchBadge(timestamp: matchTimestamp.toDate());
+                            }
 
-                          final message = _messages[index];
-                          final previousMessage = (index + 1 < _messages.length)
-                              ? _messages[index + 1]
-                              : null;
+                            final message = _messages[index];
+                            final previousMessage = (index + 1 < _messages.length)
+                                ? _messages[index + 1]
+                                : null;
 
-                          final messageDate = message.timestamp?.toDate();
-                          final previousMessageDate =
-                          previousMessage?.timestamp?.toDate();
+                            final messageDate = message.timestamp?.toDate();
+                            final previousMessageDate =
+                            previousMessage?.timestamp?.toDate();
 
-                          final bool showDateSeparator = messageDate != null &&
-                              (previousMessageDate == null ||
-                                  messageDate.day != previousMessageDate.day ||
-                                  messageDate.month !=
-                                      previousMessageDate.month ||
-                                  messageDate.year != previousMessageDate.year);
+                            final bool showDateSeparator = messageDate != null &&
+                                (previousMessageDate == null ||
+                                    messageDate.day != previousMessageDate.day ||
+                                    messageDate.month !=
+                                        previousMessageDate.month ||
+                                    messageDate.year != previousMessageDate.year);
 
-                          final bool showUnreadSeparator =
-                              message.id == _firstUnreadMessageId;
+                            final bool showUnreadSeparator =
+                                message.id == _firstUnreadMessageId;
 
-                          return Column(
-                            children: [
-                              if (showDateSeparator) DateSeparator(date: messageDate),
-                              if (showUnreadSeparator) const UnreadSeparator(),
-                              MessageBubble(
-                                key: ValueKey(message.id),
-                                message: message,
-                                isMe: message.senderId == currentUser.uid,
-                                onLongPress: () => _showMessageActions(context,
-                                    message, message.senderId == currentUser.uid),
-                              ),
-                            ],
-                          );
-                        },
+                            return Column(
+                              children: [
+                                if (showDateSeparator) DateSeparator(date: messageDate),
+                                if (showUnreadSeparator) const UnreadSeparator(),
+                                MessageBubble(
+                                  key: ValueKey(message.id),
+                                  message: message,
+                                  isMe: message.senderId == currentUser.uid,
+                                  onLongPress: () => _showMessageActions(context,
+                                      message, message.senderId == currentUser.uid),
+                                ),
+                              ],
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                    _buildTypingIndicator(otherUserId),
-                    if (isSender) _SenderInfoBanner(),
-                    Padding(
-                      padding: const EdgeInsets.all(8.0),
-                      child: Row(
-                        children: [
-                          IconButton(
-                              icon: const Icon(Icons.photo_camera,
-                                  color: Color(0xFF3498DB)),
-                              onPressed: _isUploading ? null : _sendImage),
-                          Expanded(
-                            child: TextField(
-                              controller: _messageController,
-                              decoration: InputDecoration(
-                                hintText: 'Type a message...',
-                                filled: true,
-                                fillColor: Colors.white,
-                                border: OutlineInputBorder(
-                                    borderRadius: BorderRadius.circular(20.0),
-                                    borderSide: BorderSide.none),
+                      _buildTypingIndicator(otherUserId),
+                      if (isSender) _SenderInfoBanner(),
+                      Padding(
+                        padding: const EdgeInsets.all(8.0),
+                        child: Row(
+                          children: [
+                            IconButton(
+                                icon: const Icon(Icons.photo_camera,
+                                    color: Color(0xFF3498DB)),
+                                onPressed: _isUploading ? null : _sendImage),
+                            Expanded(
+                              child: TextField(
+                                controller: _messageController,
+                                decoration: InputDecoration(
+                                  hintText: 'Type a message...',
+                                  filled: true,
+                                  fillColor: Colors.white,
+                                  border: OutlineInputBorder(
+                                      borderRadius: BorderRadius.circular(20.0),
+                                      borderSide: BorderSide.none),
+                                ),
                               ),
                             ),
-                          ),
-                          IconButton(
-                              icon: const Icon(Icons.send, color: Color(0xFF3498DB)),
-                              onPressed: _isUploading ? null : _sendMessage),
-                        ],
+                            IconButton(
+                                icon: const Icon(Icons.send, color: Color(0xFF3498DB)),
+                                onPressed: _isUploading ? null : _sendMessage),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             );
@@ -604,7 +571,6 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 }
 
-/// Banner shown to the SENDER of a contact request.
 class _SenderInfoBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
@@ -723,8 +689,8 @@ class MessageBubble extends StatelessWidget {
                           margin: const EdgeInsets.only(bottom: 4.0),
                           decoration: BoxDecoration(
                               color: isMe
-                                  ? Colors.blue.withOpacity(0.5)
-                                  : Colors.grey.withOpacity(0.1),
+                                  ? Colors.blue.withAlpha(128)
+                                  : Colors.grey.withAlpha(25),
                               borderRadius:
                               const BorderRadius.all(Radius.circular(12.0))),
                           child: Column(
@@ -830,7 +796,7 @@ class DateSeparator extends StatelessWidget {
     } else if (formattedDate.isAtSameMomentAs(yesterday)) {
       dateText = 'Yesterday';
     } else {
-      dateText = '${date.month}/${date.day}/${date.year}';
+      dateText = DateFormat.yMMMd().format(date);
     }
 
     return Padding(
@@ -901,7 +867,6 @@ class FullScreenImageScreen extends StatelessWidget {
   }
 }
 
-// NEW: A widget to display the match timestamp in the chat.
 class MatchBadge extends StatelessWidget {
   final DateTime timestamp;
   const MatchBadge({super.key, required this.timestamp});

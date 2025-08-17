@@ -1,15 +1,15 @@
+import 'dart:async';
 import 'dart:math';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:freegram/blocs/nearby_bloc.dart';
 import 'package:freegram/models/user_model.dart';
+import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/services/bluetooth_service.dart';
 import 'package:freegram/screens/profile_screen.dart';
-import 'package:freegram/services/firestore_service.dart';
 import 'package:freegram/widgets/sonar_view.dart';
 import 'package:hive_flutter/hive_flutter.dart';
-import 'package:provider/provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:app_settings/app_settings.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -21,8 +21,10 @@ class NearbyScreen extends StatefulWidget {
   State<NearbyScreen> createState() => _NearbyScreenState();
 }
 
-class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMixin, WidgetsBindingObserver {
-  final Map<String, UserModel> _userProfileCache = {};
+class _NearbyScreenState extends State<NearbyScreen>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
+  final Box _profileBox = Hive.box('user_profiles');
+  final Box _contactsBox = Hive.box('nearby_contacts');
   List<String> _lastKnownUserIds = [];
 
   bool _isBluetoothReady = false;
@@ -31,6 +33,8 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
   late AnimationController _unleashController;
   late AnimationController _discoveryController;
   String? _currentUserPhotoUrl;
+
+  Timer? _cleanupTimer;
 
   @override
   void initState() {
@@ -44,9 +48,13 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
       vsync: this,
       duration: const Duration(milliseconds: 600),
     );
-    _loadInitialProfiles();
     _fetchCurrentUserPhoto();
     _syncPermissionsAndHardwareState();
+
+    _removeStaleUsers();
+    _cleanupTimer = Timer.periodic(const Duration(minutes: 5), (timer) {
+      _removeStaleUsers();
+    });
   }
 
   @override
@@ -54,6 +62,7 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
     WidgetsBinding.instance.removeObserver(this);
     _unleashController.dispose();
     _discoveryController.dispose();
+    _cleanupTimer?.cancel();
     super.dispose();
   }
 
@@ -61,15 +70,32 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       _syncPermissionsAndHardwareState();
+      _removeStaleUsers();
+    }
+  }
+
+  void _removeStaleUsers() {
+    final now = DateTime.now();
+    final Map<dynamic, dynamic> contacts = _contactsBox.toMap();
+    contacts.forEach((key, value) {
+      final lastSeen = DateTime.parse(value);
+      if (now.difference(lastSeen).inHours >= 24) {
+        _contactsBox.delete(key);
+      }
+    });
+    if (mounted) {
+      setState(() {});
     }
   }
 
   Future<void> _syncPermissionsAndHardwareState() async {
     final bluetoothPermission = await Permission.bluetoothScan.status;
-    final isAdapterOn = FlutterBluePlus.adapterStateNow == BluetoothAdapterState.on;
+    final isAdapterOn =
+        FlutterBluePlus.adapterStateNow == BluetoothAdapterState.on;
 
     final locationPermission = await Permission.location.status;
-    final isLocationServiceOn = await Permission.location.serviceStatus.isEnabled;
+    final isLocationServiceOn =
+    await Permission.location.serviceStatus.isEnabled;
 
     final bool isBtReady = bluetoothPermission.isGranted && isAdapterOn;
     final bool isLocReady = locationPermission.isGranted && isLocationServiceOn;
@@ -80,7 +106,8 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
         _isLocationReady = isLocReady;
       });
 
-      if (context.read<NearbyBloc>().state is NearbyActive && (!isBtReady || !isLocReady)) {
+      if (context.read<NearbyBloc>().state is NearbyActive &&
+          (!isBtReady || !isLocReady)) {
         context.read<NearbyBloc>().add(StopNearbyServices());
       }
     }
@@ -116,8 +143,10 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
   Future<void> _fetchCurrentUserPhoto() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final userModel = await context.read<FirestoreService>().getUser(user.uid);
-      if(mounted) {
+      // UPDATED: Uses UserRepository
+      final userModel =
+      await context.read<UserRepository>().getUser(user.uid);
+      if (mounted) {
         setState(() {
           _currentUserPhotoUrl = userModel.photoUrl;
         });
@@ -125,39 +154,17 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
     }
   }
 
-  Future<void> _fetchProfilesForIds(List<String> userIds) async {
-    final newIds = userIds.where((id) => !_userProfileCache.containsKey(id)).toList();
-    if (newIds.isEmpty) return;
-
-    for (var userId in newIds) {
-      final profileBox = Hive.box('user_profiles');
-      if (profileBox.containsKey(userId)) {
-        _userProfileCache[userId] = UserModel.fromMap(userId, Map<String, dynamic>.from(profileBox.get(userId)));
-      } else {
-        try {
-          final userModel = await context.read<FirestoreService>().getUser(userId);
-          profileBox.put(userId, userModel.toMap());
-          _userProfileCache[userId] = userModel;
-        } catch (e) {
-          debugPrint("Error fetching user profile for $userId: $e");
-        }
-      }
-    }
-    if (mounted) setState(() {});
-  }
-
-  void _loadInitialProfiles() {
-    final box = Hive.box('nearby_contacts');
-    _fetchProfilesForIds(box.keys.cast<String>().toList());
-  }
-
   String _getStatusMessage(NearbyStatus status, bool isScanning) {
     if (isScanning) {
       switch (status) {
-        case NearbyStatus.scanning: return "Scanning for others...";
-        case NearbyStatus.advertising: return "Making you discoverable...";
-        case NearbyStatus.userFound: return "Found someone new!";
-        default: return "Scanning & Broadcasting...";
+        case NearbyStatus.scanning:
+          return "Scanning for others...";
+        case NearbyStatus.advertising:
+          return "Making you discoverable...";
+        case NearbyStatus.userFound:
+          return "Found someone new!";
+        default:
+          return "Scanning & Broadcasting...";
       }
     }
     if (_isBluetoothReady && _isLocationReady) {
@@ -167,12 +174,11 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
   }
 
   void _deleteFoundUser(String userId) {
-    final box = Hive.box('nearby_contacts');
-    box.delete(userId);
-    _userProfileCache.remove(userId);
+    _contactsBox.delete(userId);
     setState(() {});
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('User removed. They can be discovered again.')),
+      const SnackBar(
+          content: Text('User removed. They can be discovered again.')),
     );
   }
 
@@ -185,17 +191,19 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
       body: BlocConsumer<NearbyBloc, NearbyState>(
         listener: (context, state) {
           if (state is NearbyActive) {
-            if (state.foundUserIds.length > _lastKnownUserIds.length) {
-              _fetchProfilesForIds(state.foundUserIds);
+            final currentIds = _contactsBox.keys.cast<String>().toList();
+            if (currentIds.length > _lastKnownUserIds.length) {
               _discoveryController.forward(from: 0.0);
             }
-            _lastKnownUserIds = state.foundUserIds;
+            _lastKnownUserIds = currentIds;
           }
         },
         builder: (context, state) {
           bool isScanning = state is NearbyActive;
-          NearbyStatus currentStatus = (state is NearbyActive) ? state.status : NearbyStatus.idle;
-          List<String> foundUserIds = (state is NearbyActive) ? state.foundUserIds : [];
+          NearbyStatus currentStatus =
+          (state is NearbyActive) ? state.status : NearbyStatus.idle;
+
+          List<String> foundUserIds = _contactsBox.keys.cast<String>().toList();
 
           return Column(
             children: [
@@ -209,7 +217,8 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
     );
   }
 
-  Widget _buildControlSection(BuildContext context, bool isScanning, NearbyStatus status) {
+  Widget _buildControlSection(
+      BuildContext context, bool isScanning, NearbyStatus status) {
     bool canStartScan = _isBluetoothReady && _isLocationReady;
 
     return Container(
@@ -234,9 +243,9 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
             ],
           ),
           const SizedBox(height: 16),
-          Text(_getStatusMessage(status, isScanning), style: const TextStyle(color: Colors.grey, fontSize: 16)),
+          Text(_getStatusMessage(status, isScanning),
+              style: const TextStyle(color: Colors.grey, fontSize: 16)),
           const SizedBox(height: 16),
-
           SizedBox(
             height: 200,
             child: SonarView(
@@ -294,8 +303,12 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
       child: CircleAvatar(
         radius: 30,
         backgroundColor: Colors.grey[300],
-        backgroundImage: _currentUserPhotoUrl != null ? NetworkImage(_currentUserPhotoUrl!) : null,
-        child: _currentUserPhotoUrl == null ? const Icon(Icons.person, size: 30, color: Colors.white) : null,
+        backgroundImage: _currentUserPhotoUrl != null
+            ? NetworkImage(_currentUserPhotoUrl!)
+            : null,
+        child: _currentUserPhotoUrl == null
+            ? const Icon(Icons.person, size: 30, color: Colors.white)
+            : null,
       ),
     );
 
@@ -318,9 +331,14 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
 
   List<Widget> _buildSonarAvatars() {
     final List<Widget> avatars = [];
-    final sonarRadius = 100.0;
+    const sonarRadius = 100.0;
+    final foundUserIds = _contactsBox.keys;
 
-    _userProfileCache.forEach((userId, user) {
+    for (var userId in foundUserIds) {
+      final userMap = _profileBox.get(userId);
+      if (userMap == null) continue;
+
+      final user = UserModel.fromMap(userId, Map<String, dynamic>.from(userMap));
       final photoUrl = user.photoUrl;
       final random = Random(userId.hashCode);
       final angle = random.nextDouble() * 2 * pi;
@@ -358,7 +376,7 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
           child: avatarWidget,
         ),
       );
-    });
+    }
     return avatars;
   }
 
@@ -366,7 +384,8 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
     if (userIds.isEmpty) {
       return const Expanded(
         child: Center(
-          child: Text("No users found yet. Turn on the sonar!", style: TextStyle(color: Colors.grey)),
+          child: Text("No users found yet. Turn on the sonar!",
+              style: TextStyle(color: Colors.grey)),
         ),
       );
     }
@@ -382,14 +401,16 @@ class _NearbyScreenState extends State<NearbyScreen> with TickerProviderStateMix
         itemCount: userIds.length,
         itemBuilder: (context, index) {
           final userId = userIds[index];
-          final user = _userProfileCache[userId];
+          final userMap = _profileBox.get(userId);
 
-          if (user == null) {
-            return const Card(child: Center(child: CircularProgressIndicator()));
+          if (userMap == null) {
+            return const SizedBox.shrink();
           }
+          final user = UserModel.fromMap(userId, Map<String, dynamic>.from(userMap));
           return CompactNearbyUserCard(
             user: user,
-            onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
+            onTap: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => ProfileScreen(userId: userId))),
             onDelete: () => _deleteFoundUser(userId),
           );
         },
@@ -412,6 +433,8 @@ class CompactNearbyUserCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool isPopular = user.level >= 10;
+
     return GestureDetector(
       onTap: onTap,
       child: Card(
@@ -421,14 +444,29 @@ class CompactNearbyUserCard extends StatelessWidget {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            (user.photoUrl.isNotEmpty)
-                ? Image.network(
-              user.photoUrl,
-              fit: BoxFit.cover,
-              errorBuilder: (context, error, stackTrace) => const Icon(Icons.person, size: 40, color: Colors.grey),
-            )
-                : const Icon(Icons.person, size: 40, color: Colors.grey),
-
+            if (user.photoUrl.isNotEmpty)
+              Image.network(
+                user.photoUrl,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) =>
+                const Icon(Icons.person, size: 40, color: Colors.grey),
+              )
+            else
+              const Icon(Icons.person, size: 40, color: Colors.grey),
+            if (isPopular)
+              Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.amber, width: 3),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.amber.withOpacity(0.8),
+                      blurRadius: 8.0,
+                      spreadRadius: 2.0,
+                    ),
+                  ],
+                ),
+              ),
             Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
@@ -438,7 +476,6 @@ class CompactNearbyUserCard extends StatelessWidget {
                 ),
               ),
             ),
-
             Positioned(
               bottom: 5,
               left: 5,
@@ -446,11 +483,13 @@ class CompactNearbyUserCard extends StatelessWidget {
               child: Text(
                 user.username,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-
             Positioned(
               top: 4,
               right: 4,
@@ -466,7 +505,6 @@ class CompactNearbyUserCard extends StatelessWidget {
                 ),
               ),
             ),
-
             if (user.presence)
               Positioned(
                 top: 4,
