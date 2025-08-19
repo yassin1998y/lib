@@ -1,5 +1,3 @@
-// lib/screens/main_screen.dart
-
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -12,12 +10,16 @@ import 'package:freegram/repositories/post_repository.dart';
 import 'package:freegram/repositories/user_repository.dart';
 import 'package:freegram/screens/chat_list_screen.dart';
 import 'package:freegram/screens/create_post_screen.dart';
+import 'package:freegram/screens/create_reel_screen.dart';
 import 'package:freegram/screens/discover_screen.dart';
 import 'package:freegram/screens/match_screen.dart';
 import 'package:freegram/screens/nearby_screen.dart';
 import 'package:freegram/screens/notifications_screen.dart';
 import 'package:freegram/screens/profile_screen.dart';
+import 'package:freegram/screens/reels_viewer_screen.dart';
 import 'package:freegram/screens/store_screen.dart';
+import 'package:freegram/widgets/reels_rail_widget.dart';
+import 'package:freegram/widgets/stories_rail_widget.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:freegram/widgets/post_card.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -109,6 +111,47 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _pageController.jumpToPage(index);
   }
 
+  Future<void> _showCreateContentSheet() async {
+    // FIX: Store the navigator before the async gap.
+    final navigator = Navigator.of(context);
+    await showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.grid_on),
+              title: const Text('New Post'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                final source = await _showImageSourceActionSheet(context);
+                if (source != null) {
+                  // Use the stored navigator.
+                  await navigator.push(MaterialPageRoute(
+                      builder: (_) => CreatePostScreen(imageSource: source)));
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.video_collection),
+              title: const Text('New Reel'),
+              onTap: () async {
+                Navigator.of(context).pop();
+                final source = await _showImageSourceActionSheet(context);
+                if (source != null) {
+                  // Use the stored navigator.
+                  await navigator.push(MaterialPageRoute(
+                      builder: (_) => CreateReelScreen(imageSource: source)));
+                }
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<ImageSource?> _showImageSourceActionSheet(BuildContext context) async {
     return await showModalBottomSheet<ImageSource>(
       context: context,
@@ -137,13 +180,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       case 0:
         return {
           'icon': Icons.add,
-          'onPressed': () async {
-            final source = await _showImageSourceActionSheet(context);
-            if (source != null && mounted) {
-              Navigator.of(context).push(MaterialPageRoute(
-                  builder: (_) => CreatePostScreen(imageSource: source)));
-            }
-          },
+          'onPressed': () => _showCreateContentSheet(),
         };
       case 1:
         return {
@@ -234,6 +271,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         elevation: 1,
         actions: [
           IconButton(
+            icon: const Icon(Icons.video_collection_outlined, color: Colors.black87),
+            onPressed: () => Navigator.of(context)
+                .push(MaterialPageRoute(builder: (_) => const ReelsViewerScreen())),
+          ),
+          IconButton(
             icon: const Icon(Icons.storefront_outlined, color: Colors.black87),
             onPressed: () => Navigator.of(context)
                 .push(MaterialPageRoute(builder: (_) => const StoreScreen())),
@@ -301,6 +343,17 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 }
 
+// --- ENUM TO REPRESENT FEED ITEM TYPES ---
+enum FeedItemType { stories, post, reels }
+
+// --- CUSTOM CLASS TO HOLD FEED ITEM DATA ---
+class FeedItem {
+  final FeedItemType type;
+  final DocumentSnapshot? postSnapshot;
+
+  FeedItem({required this.type, this.postSnapshot});
+}
+
 class FeedWidget extends StatefulWidget {
   const FeedWidget({super.key});
 
@@ -316,6 +369,9 @@ class _FeedWidgetState extends State<FeedWidget> {
   bool _hasMore = true;
   DocumentSnapshot? _lastDocument;
   final int _postLimit = 10;
+
+  // This list will hold the combined feed items
+  List<FeedItem> _feedItems = [];
 
   @override
   void initState() {
@@ -336,8 +392,24 @@ class _FeedWidgetState extends State<FeedWidget> {
     super.dispose();
   }
 
+  void _buildCombinedFeed() {
+    List<FeedItem> combinedList = [];
+    // 1. Add the Stories rail at the top
+    combinedList.add(FeedItem(type: FeedItemType.stories));
+
+    // 2. Add posts and inject the Reels rail
+    for (int i = 0; i < _posts.length; i++) {
+      combinedList.add(FeedItem(type: FeedItemType.post, postSnapshot: _posts[i]));
+      // 3. After the 2nd post (index 1), add the Reels rail
+      if (i == 1) {
+        combinedList.add(FeedItem(type: FeedItemType.reels));
+      }
+    }
+    _feedItems = combinedList;
+  }
+
   Future<void> _fetchFeedPosts({bool isRefresh = false}) async {
-    if (_isFetchingMore || !_hasMore) return;
+    if (_isFetchingMore || (!_hasMore && !isRefresh)) return;
     if (isRefresh) {
       _posts = [];
       _lastDocument = null;
@@ -384,6 +456,7 @@ class _FeedWidgetState extends State<FeedWidget> {
       }
     } finally {
       if (mounted) {
+        _buildCombinedFeed(); // Rebuild the combined list with new posts
         setState(() {
           _isLoading = false;
           _isFetchingMore = false;
@@ -398,16 +471,22 @@ class _FeedWidgetState extends State<FeedWidget> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    if (_posts.isEmpty) {
+    if (_feedItems.length <= 1 && !_hasMore) { // <=1 because stories rail is always there
       return RefreshIndicator(
         onRefresh: () => _fetchFeedPosts(isRefresh: true),
-        child: const CustomScrollView(
-          physics: AlwaysScrollableScrollPhysics(),
+        child: CustomScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
-            SliverFillRemaining(
-              child: Center(
-                child: Text('No posts to show. Start adding friends!'),
-              ),
+            SliverList(
+              delegate: SliverChildListDelegate([
+                const StoriesRailWidget(),
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(48.0),
+                    child: Text('No posts to show. Start adding friends!'),
+                  ),
+                ),
+              ]),
             ),
           ],
         ),
@@ -418,14 +497,23 @@ class _FeedWidgetState extends State<FeedWidget> {
       onRefresh: () => _fetchFeedPosts(isRefresh: true),
       child: ListView.builder(
         controller: _scrollController,
-        itemCount: _posts.length + (_hasMore ? 1 : 0),
+        itemCount: _feedItems.length + (_hasMore ? 1 : 0),
         itemBuilder: (context, index) {
-          if (index == _posts.length) {
+          if (index >= _feedItems.length) {
             return _isFetchingMore
                 ? const Center(child: CircularProgressIndicator())
                 : const SizedBox();
           }
-          return PostCard(post: _posts[index]);
+
+          final item = _feedItems[index];
+          switch (item.type) {
+            case FeedItemType.stories:
+              return const StoriesRailWidget();
+            case FeedItemType.reels:
+              return const ReelsRailWidget();
+            case FeedItemType.post:
+              return PostCard(post: item.postSnapshot!);
+          }
         },
       ),
     );

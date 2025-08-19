@@ -7,7 +7,6 @@ import 'package:freegram/repositories/user_repository.dart';
 /// A repository dedicated to post and comment-related Firestore operations.
 class PostRepository {
   final FirebaseFirestore _db;
-  // UPDATED: Now depends on the new repositories for cross-domain logic.
   final UserRepository _userRepository;
   final GamificationRepository _gamificationRepository;
   final TaskRepository _taskRepository;
@@ -30,6 +29,7 @@ class PostRepository {
     required String username,
     required String caption,
     required String imageUrl,
+    String? thumbnailUrl,
     required String postType,
   }) async {
     await _db.collection('posts').add({
@@ -37,10 +37,10 @@ class PostRepository {
       'username': username,
       'caption': caption,
       'imageUrl': imageUrl,
+      'thumbnailUrl': thumbnailUrl,
       'postType': postType,
       'timestamp': FieldValue.serverTimestamp(),
     });
-    // UPDATED: Calls the new repositories directly
     await _gamificationRepository.addXp(userId, 25, isSeasonal: true);
     await _taskRepository.updateTaskProgress(userId, 'create_post', 1);
   }
@@ -79,7 +79,6 @@ class PostRepository {
     } else {
       await likeRef.set({'userId': userId});
       if (postOwnerId != userId) {
-        // UPDATED: Calls the new repositories directly
         await _gamificationRepository.addXp(postOwnerId, 5, isSeasonal: true);
         await _notificationRepository.addNotification(
           userId: postOwnerId,
@@ -115,7 +114,6 @@ class PostRepository {
     });
 
     if (postData['userId'] != userId) {
-      // UPDATED: Calls the new repositories directly
       await _gamificationRepository.addXp(postData['userId'], 10, isSeasonal: true);
       await _notificationRepository.addNotification(
         userId: postData['userId'],
@@ -148,6 +146,20 @@ class PostRepository {
         .where('userId', whereIn: friendIds.take(30).toList())
         .orderBy('timestamp', descending: true)
         .limit(10);
+
+    if (lastDocument != null) {
+      query = query.startAfterDocument(lastDocument);
+    }
+    return query.get();
+  }
+
+  Future<QuerySnapshot> getReelPosts(
+      {DocumentSnapshot? lastDocument, int limit = 10}) async {
+    Query query = _db
+        .collection('posts')
+        .where('postType', isEqualTo: 'reel')
+        .orderBy('timestamp', descending: true)
+        .limit(limit);
 
     if (lastDocument != null) {
       query = query.startAfterDocument(lastDocument);

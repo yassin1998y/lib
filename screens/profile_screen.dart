@@ -12,6 +12,7 @@ import 'package:freegram/screens/friends_list_screen.dart';
 import 'package:freegram/screens/level_pass_screen.dart';
 import 'package:freegram/screens/tasks_screen.dart';
 import 'package:timeago/timeago.dart' as timeago;
+import 'package:cached_network_image/cached_network_image.dart';
 
 import 'post_detail_screen.dart';
 
@@ -203,8 +204,9 @@ class _ProfileScreenState extends State<ProfileScreen>
                                     padding: const EdgeInsets.all(5.0),
                                     child: CircleAvatar(
                                       backgroundColor: Colors.grey[200],
+                                      // FIX: Use CachedNetworkImage for robust image loading
                                       backgroundImage: user.photoUrl.isNotEmpty
-                                          ? NetworkImage(user.photoUrl)
+                                          ? CachedNetworkImageProvider(user.photoUrl)
                                           : null,
                                       child: user.photoUrl.isEmpty
                                           ? Text(
@@ -459,11 +461,12 @@ class _ProfileScreenState extends State<ProfileScreen>
                   fit: StackFit.expand,
                   alignment: Alignment.center,
                   children: [
-                    Image.network(
-                      postData['imageUrl'],
+                    // FIX: Use CachedNetworkImage for robust image loading
+                    CachedNetworkImage(
+                      imageUrl: postData['imageUrl'],
                       fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) =>
-                      const Icon(Icons.error),
+                      placeholder: (context, url) => Container(color: Colors.grey[200]),
+                      errorWidget: (context, url, error) => const Icon(Icons.error),
                     ),
                     if (isReel)
                       const Positioned(
